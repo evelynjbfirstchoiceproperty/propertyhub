@@ -133,7 +133,7 @@ function propertyCard(p){
   let ph=photosFor(getRef(p));
   if(ph.length)html+='<div class="photo-grid">'+ph.map(x=>'<img src="'+esc(x)+'" alt="">').join('')+'</div>';
   return html+'</div></details></div>';
-}
+ 
 function formatValue(k,v){let s=String(v);if(norm(k).includes('photo folder')&&/^https?:\/\//i.test(s))return`<a class="drive" href="${esc(s)}" target="_blank" rel="noopener noreferrer">📷 Open Google Drive Photos</a>`;if(/^https?:\/\//i.test(s))return`<a href="${esc(s)}" target="_blank" rel="noopener noreferrer">${esc(s)}</a>`;return esc(s).replace(/\n/g,'<br>')}
 function icon(c){return c==='land'?'🌳':c==='commercial'?'🏢':c==='factory'?'🏭':'🏠'}
 const LEAD_KEY='EvelynPropertyHub_Leads';
@@ -159,7 +159,7 @@ function showCustomerView(){
   document.getElementById('adminWorkspace').style.display='none';
   document.getElementById('customerView').style.display='block';
   renderCustomerProperties();
-}
+
 function showAdminView(){
   if(!adminUnlocked){openAdminLogin();return}
   document.body.classList.remove('customer-mode');
@@ -169,7 +169,6 @@ function showAdminView(){
   document.getElementById('customerView').style.display='none';
   document.getElementById('adminWorkspace').style.display='block';
   renderAll();
-}
 function logoutAdmin(){adminUnlocked=false;showCustomerView()}
 function openRequirementForm(){const f=document.getElementById('leadForm');if(!f)return;f.scrollIntoView({behavior:'smooth',block:'start'});const first=document.getElementById('leadName');if(first)setTimeout(()=>first.focus(),400)}
 function renderCustomerProperties(){let q=norm(document.getElementById('customerSearch').value||''),type=(document.getElementById('customerTypeFilter')?.value||'').toLowerCase(),state=document.getElementById('customerStateFilter')?.value||'',arr=[];Object.keys(database).forEach(c=>database[c].forEach(p=>{if(norm(getStatus(p))==='sold'||norm(getStatus(p))==='rented'||norm(getStatus(p))==='withdrawn')return;if(type&&c!==type)return;if(state&&getState(p)!==state)return;if(!q||Object.entries(p).some(([k,v])=>!k.startsWith('_')&&norm(v).includes(q)))arr.push(p)}));let states=[...new Set(Object.values(database).flat().map(getState))].sort((a,b)=>a.localeCompare(b));let sf=document.getElementById('customerStateFilter');if(sf){let prev=sf.value;sf.innerHTML='<option value="">All States</option>'+states.map(x=>'<option value="'+esc(x)+'">'+esc(x)+'</option>').join('');if(states.includes(prev))sf.value=prev;else if(state&&states.includes(state))sf.value=state}let grouped={land:[],commercial:[],factory:[],house:[]};arr.sort((a,b)=>compareReference(getRef(a),getRef(b)));arr.slice(0,200).forEach(p=>{if(grouped[p._category])grouped[p._category].push(p)});let labels={land:'🌳 LAND',commercial:'🏢 COMMERCIAL',factory:'🏭 FACTORY',house:'🏠 HOUSE'};let html='';Object.keys(grouped).forEach(c=>{if(!grouped[c].length)return;html+='<details class="category-collapse"><summary class="category-collapse-title"><span>'+labels[c]+'</span><span class="category-count">'+grouped[c].length+' listing'+(grouped[c].length===1?'':'s')+'</span></summary><div class="category-collapse-body">'+grouped[c].map(customerCard).join('')+'</div></details>'});document.getElementById('customerResults').innerHTML=html||'<div class="no-data">No matching property.</div>'}
