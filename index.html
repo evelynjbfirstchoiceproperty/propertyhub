@@ -2016,7 +2016,7 @@ commissionPage=function(){
   // Keep Excel-imported photo URLs as the preferred display source. Drive folders are hydrated
   // by the existing Apps Script bridge when EPH_DRIVE_PHOTO_API_URL is configured.
   const priorLoadPublic=window.loadPublicListings;
-  if(typeof priorLoadPublic==='function')window.loadPublicListings=async function(){const out=await priorLoadPublic.apply(this,arguments);try{if(typeof ephHydrateDrivePhotos==='function')await ephHydrateDrivePhotos(ephPublicAllListings||[]);}catch(e){}return out;};
+  if(typeof priorLoadPublic==='function')window.loadPublicListings=async function(){const out=await priorLoadPublic.apply(this,arguments);try{if(typeof ephHydrateDrivePhotos==='function'){const rows=Array.isArray(window.ephPublicAllListings)?window.ephPublicAllListings.slice():[];Promise.resolve().then(()=>window.ephHydrateDrivePhotos(rows)).catch(e=>console.warn('Background photo hydration failed',e));}}catch(e){console.warn('Could not start background photo hydration',e);}return out;};
 
   async function ephSubmitViewingViaBridge(payload){
     if(!EPH_DRIVE_PHOTO_API_URL)throw new Error('Bridge URL is not configured');
@@ -3346,48 +3346,11 @@ function ephCommissionDashboardStats(){
 </script>
 
 
-<script id="eph-instant-photo-cache-20261018">
-(function(){
- 'use strict';
- const KEY='eph_drive_photo_cache_v1_';
- function hash(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(36)}
- function cacheKey(folder){return KEY+hash(String(folder||'').trim())}
- function read(folder){try{const x=JSON.parse(localStorage.getItem(cacheKey(folder))||'null');return Array.isArray(x)&&x.length?x.filter(u=>typeof u==='string'&&/^https?:\/\//i.test(u)).slice(0,5):[]}catch(e){return []}}
- function save(folder,urls){try{if(Array.isArray(urls)&&urls.length)localStorage.setItem(cacheKey(folder),JSON.stringify(urls.filter(u=>typeof u==='string'&&/^https?:\/\//i.test(u)).slice(0,5)))}catch(e){}}
- function paint(folder,urls){if(!Array.isArray(urls)||!urls.length)return;const items=Array.isArray(window.ephPublicAllListings)?window.ephPublicAllListings:[];let changed=false;for(const x of items){if(String(x.photoFolder||'').trim()!==String(folder||'').trim())continue;const merged=[];for(const u of [...urls,...(Array.isArray(x.photos)?x.photos:[]),x.photo||''])if(typeof u==='string'&&/^https?:\/\//i.test(u)&&!merged.includes(u)&&merged.length<5)merged.push(u);if(merged.length){x.photos=merged;x.photo=merged[0];changed=true}}if(changed&&typeof window.ephRenderAllPublicListingGroups==='function')window.ephRenderAllPublicListingGroups()}
- const original=window.ephLoadDrivePhotos;
- if(typeof original==='function'&&!original.__ephInstantCache){
-   const inflight=new Map();
-   const fast=function(folder){
-     const folderKey=String(folder||'').trim();
-     if(!folderKey)return Promise.resolve([]);
-     const cached=read(folderKey);
-     if(cached.length){
-       // Paint from the previous visit immediately; refresh silently in the background.
-       Promise.resolve().then(()=>{
-         if(inflight.has(folderKey))return inflight.get(folderKey);
-         const job=Promise.resolve().then(()=>original.call(this,folderKey)).then(urls=>{if(urls&&urls.length){save(folderKey,urls);paint(folderKey,urls)}return urls||[]}).catch(()=>[]).finally(()=>inflight.delete(folderKey));
-         inflight.set(folderKey,job);return job;
-       });
-       return Promise.resolve(cached);
-     }
-     if(inflight.has(folderKey))return inflight.get(folderKey);
-     const job=Promise.resolve().then(()=>original.call(this,folderKey)).then(urls=>{if(urls&&urls.length)save(folderKey,urls);return urls||[]}).catch(()=>[]).finally(()=>inflight.delete(folderKey));
-     inflight.set(folderKey,job);return job;
-   };
-   fast.__ephInstantCache=true;window.ephLoadDrivePhotos=fast;
- }
- // Prepaint cached images as soon as listing data is available, without waiting for Drive.
- const oldLoad=window.loadPublicListings;
- if(typeof oldLoad==='function'&&!oldLoad.__ephInstantCache){
-   const wrapped=async function(){const result=await oldLoad.apply(this,arguments);try{const items=Array.isArray(window.ephPublicAllListings)?window.ephPublicAllListings:[];let changed=false;for(const x of items){if(!x.photoFolder)continue;const cached=read(x.photoFolder);if(!cached.length)continue;const merged=[];for(const u of [...cached,...(Array.isArray(x.photos)?x.photos:[]),x.photo||''])if(typeof u==='string'&&/^https?:\/\//i.test(u)&&!merged.includes(u)&&merged.length<5)merged.push(u);if(merged.length){x.photos=merged;x.photo=merged[0];changed=true}}if(changed&&typeof window.ephRenderAllPublicListingGroups==='function')window.ephRenderAllPublicListingGroups()}catch(e){}return result};
-   wrapped.__ephInstantCache=true;window.loadPublicListings=wrapped;
- }
- console.log('EPH instant photo cache enabled');
-})();
-</script>
 
-</body></html>
+
+
+<!-- Mobile compatibility repairs: legacy appended patches normalized into body -->
+
 
 <script id="eph-customer-leads-dedupe-display-20261016">
 (function(){
@@ -4123,3 +4086,39 @@ function ephCommissionDashboardStats(){
  console.log('EPH final export handler installed');
 })();
 </script>
+
+
+<style id="eph-mobile-interaction-compatibility-20261018">
+html,body{max-width:100%;overscroll-behavior-x:none;-webkit-text-size-adjust:100%;}
+button,a,[role="button"],input,select,textarea{touch-action:manipulation;}
+button,a,[role="button"]{-webkit-tap-highlight-color:rgba(201,158,78,.18);}
+.modal-backdrop:not(.show){pointer-events:none!important;visibility:hidden!important;}
+.modal-backdrop.show{pointer-events:auto;}
+#ephPublicDetail:not(.show),#ephCustomerViewingModal:not(.show){pointer-events:none!important;}
+#ephPublicDetail.show,#ephCustomerViewingModal.show{pointer-events:auto!important;}
+.eph-photo-strip img{max-width:100%;}
+</style>
+<script id="eph-mobile-interaction-compatibility-script-20261018">
+(function(){
+ 'use strict';
+ // Mobile Safari can keep a stale hidden overlay in the hit-test stack after a modal closes.
+ function repairHiddenOverlays(){
+  document.querySelectorAll('.modal-backdrop').forEach(function(el){
+   if(!el.classList.contains('show')){el.style.pointerEvents='none';el.style.visibility='hidden';}
+   else {el.style.pointerEvents='auto';el.style.visibility='visible';}
+  });
+ }
+ document.addEventListener('DOMContentLoaded',repairHiddenOverlays,{once:true});
+ document.addEventListener('click',function(e){
+  var close=e.target&&e.target.closest?e.target.closest('[data-dismiss="modal"],.modal-close,[data-eph-close-modal]'):null;
+  if(close){setTimeout(repairHiddenOverlays,0);}
+ },true);
+ // Never block the page's normal click handlers; only recheck overlay state after visibility changes.
+ var mo;
+ try{mo=new MutationObserver(function(records){var relevant=records.some(function(r){return r.type==='attributes'&&(r.attributeName==='class'||r.attributeName==='style');});if(relevant)repairHiddenOverlays();});
+  document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('.modal-backdrop').forEach(function(el){mo.observe(el,{attributes:true,attributeFilter:['class','style']});});},{once:true});
+ }catch(e){}
+})();
+</script>
+
+</body></html>
