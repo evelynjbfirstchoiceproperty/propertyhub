@@ -703,13 +703,14 @@ window.addEventListener('load',()=>{const x=document.getElementById('publicListi
 </script>
 
 
+<script>
 function ephScheduleStoryExpiry(){try{clearTimeout(window.__ephStoryExpiryTimer);const items=ephGetStories();if(!items.length)return;const next=Math.max(1000,Math.min(...items.map(x=>x.createdAt+86400000))-Date.now()+100);window.__ephStoryExpiryTimer=setTimeout(()=>{ephGetStories();ephRenderPublicStories();if(currentPage==='stories')render();ephScheduleStoryExpiry();},next);}catch(e){}}
 const ephBaseAddStory=ephAddStory;
 ephAddStory=function(){ephBaseAddStory();ephScheduleStoryExpiry();};
 const ephBaseDeleteStory=ephDeleteStory;
 ephDeleteStory=function(id){ephBaseDeleteStory(id);ephScheduleStoryExpiry();};
 window.addEventListener('load',()=>ephScheduleStoryExpiry());
-
+</script>
 
 <script>
 /* Customer listing and cloud video-story integration. Keeps the existing master layout. */
@@ -3134,9 +3135,9 @@ function ephCommissionDashboardStats(){
   if(typeof oldHydrate==='function'&&!oldHydrate.__ephFastPaint){
     const fastHydrate=function(items){
       const rows=(items||[]).filter(x=>x&&x.photoFolder&&!(Array.isArray(x.photos)&&x.photos.length>=5));
-      return Promise.all(rows.map(async x=>{
-        try{const urls=await window.ephLoadDrivePhotos(x.photoFolder);if(urls.length){const prior=Array.isArray(x.photos)?x.photos.filter(Boolean):[];const merged=[];for(const u of [...urls,...prior,x.photo||''])if(u&&!merged.includes(u)&&merged.length<5)merged.push(u);x.photos=merged;if(merged[0])x.photo=merged[0];}}catch(e){}
-      })).then(()=>{if(typeof window.ephRenderAllPublicListingGroups==='function')window.ephRenderAllPublicListingGroups();});
+      let cursor=0;
+      const worker=async()=>{while(cursor<rows.length){const x=rows[cursor++];try{const urls=await window.ephLoadDrivePhotos(x.photoFolder);if(urls.length){const prior=Array.isArray(x.photos)?x.photos.filter(Boolean):[];const merged=[];for(const u of [...urls,...prior,x.photo||''])if(u&&!merged.includes(u)&&merged.length<5)merged.push(u);x.photos=merged;if(merged[0])x.photo=merged[0];}}catch(e){console.warn('Drive photo load failed for listing',x.ref||x._key,e);}}};
+      return Promise.all(Array.from({length:Math.min(3,rows.length)},()=>worker())).then(()=>{if(typeof window.ephRenderAllPublicListingGroups==='function')window.ephRenderAllPublicListingGroups();});
     };
     fastHydrate.__ephFastPaint=true;window.ephHydrateDrivePhotos=fastHydrate;
   }
@@ -4088,37 +4089,12 @@ function ephCommissionDashboardStats(){
 </script>
 
 
-<style id="eph-mobile-interaction-compatibility-20261018">
-html,body{max-width:100%;overscroll-behavior-x:none;-webkit-text-size-adjust:100%;}
+
+
+<style id="eph-mobile-tap-compatibility-20261018">
+html,body{max-width:100%;-webkit-text-size-adjust:100%;}
 button,a,[role="button"],input,select,textarea{touch-action:manipulation;}
 button,a,[role="button"]{-webkit-tap-highlight-color:rgba(201,158,78,.18);}
-.modal-backdrop:not(.show){pointer-events:none!important;visibility:hidden!important;}
-.modal-backdrop.show{pointer-events:auto;}
-#ephPublicDetail:not(.show),#ephCustomerViewingModal:not(.show){pointer-events:none!important;}
-#ephPublicDetail.show,#ephCustomerViewingModal.show{pointer-events:auto!important;}
 .eph-photo-strip img{max-width:100%;}
 </style>
-<script id="eph-mobile-interaction-compatibility-script-20261018">
-(function(){
- 'use strict';
- // Mobile Safari can keep a stale hidden overlay in the hit-test stack after a modal closes.
- function repairHiddenOverlays(){
-  document.querySelectorAll('.modal-backdrop').forEach(function(el){
-   if(!el.classList.contains('show')){el.style.pointerEvents='none';el.style.visibility='hidden';}
-   else {el.style.pointerEvents='auto';el.style.visibility='visible';}
-  });
- }
- document.addEventListener('DOMContentLoaded',repairHiddenOverlays,{once:true});
- document.addEventListener('click',function(e){
-  var close=e.target&&e.target.closest?e.target.closest('[data-dismiss="modal"],.modal-close,[data-eph-close-modal]'):null;
-  if(close){setTimeout(repairHiddenOverlays,0);}
- },true);
- // Never block the page's normal click handlers; only recheck overlay state after visibility changes.
- var mo;
- try{mo=new MutationObserver(function(records){var relevant=records.some(function(r){return r.type==='attributes'&&(r.attributeName==='class'||r.attributeName==='style');});if(relevant)repairHiddenOverlays();});
-  document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('.modal-backdrop').forEach(function(el){mo.observe(el,{attributes:true,attributeFilter:['class','style']});});},{once:true});
- }catch(e){}
-})();
-</script>
-
 </body></html>
