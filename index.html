@@ -354,7 +354,7 @@ editRecord=function(type,id){
 async function ephDeleteRecord(type,id){
  if(!window.confirm('Delete this record from Supabase? This cannot be undone.'))return;
  try{
-  ephRequireAdmin();let path='',verifyPath='',deletedAgentMeta=null;
+  ephRequireAdmin();let path='',verifyPath='';
   if(type==='lead'){
    const r=leads.find(x=>String(x.id)===String(id)||String(x._dbid)===String(id));
    if(!r?._dbid)throw new Error('The database record ID is missing. Refresh Customer Leads and try again.');
@@ -365,19 +365,10 @@ async function ephDeleteRecord(type,id){
    if(!r?._dbid||!r._table)throw new Error('The database record ID is missing. Refresh Property Listings and try again.');
    path='/rest/v1/'+r._table+'?id=eq.'+encodeURIComponent(r._dbid);
    verifyPath='/rest/v1/'+r._table+'?select=id&id=eq.'+encodeURIComponent(r._dbid)+'&limit=1';
-  }else if(type==='viewing'){
-   // Viewing rows are stored in crm_records. Resolve the database primary key explicitly;
-   // never use the display appointment code as the Supabase row ID.
-   const r=(appointments||[]).find(x=>String(x.id)===String(id)||String(x._dbid)===String(id));
-   const dbid=String(r?._dbid??r?._crmRecordId??r?._sourceRecordId??'').trim();
-   if(!dbid)throw new Error('The Supabase database ID is missing for this viewing appointment. Refresh Viewing Reminders and try again.');
-   path='/rest/v1/crm_records?id=eq.'+encodeURIComponent(dbid)+'&kind=eq.viewing';
-   verifyPath='/rest/v1/crm_records?select=id,kind&id=eq.'+encodeURIComponent(dbid)+'&kind=eq.viewing&limit=1';
   }else{
    const map={agent:agents,viewing:appointments,commission:commissions,lease:leases};
    const r=(map[type]||[]).find(x=>String(x.id)===String(id)||String(x._dbid)===String(id));
-   if(type==='agent'&&r)deletedAgentMeta={code:String(r.displayCode||r.id||'').trim().toUpperCase(),name:String(r.name||'').trim(),phone:String(r.phone||'').trim(),requestId:String(r.googleFormRequestId||r._sourceRequestId||(r._sourceTable==='crm_cobroke_requests'?r._dbid:'')||'').trim()};
-   if(!r?._dbid)throw new Error('The database record ID is missing. Refresh the relevant database page and try again.');
+   if(!r?._dbid)throw new Error('The database record ID is missing. Refresh Agent Database and try again.');
    // Agent rows imported from crm_cobroke_requests use the request's ID as _dbid;
    // never mistake that source-table ID for the crm_records primary key.
    let canonicalRowId=String(r._canonicalDbId||r._crmRecordId||'');
@@ -388,10 +379,11 @@ async function ephDeleteRecord(type,id){
     if(!match)throw new Error('This row is a Co-broke Request source record, not a canonical Agent row. Sync to CRM first, then delete the CRM Agent copy. The original request was kept.');
     canonicalRowId=String(match.id);
    }
-   const targetId=canonicalRowId||String(r._dbid||r._sourceRecordId||r._dbId||'');
-   if(!targetId)throw new Error('The canonical Supabase record ID is missing. Refresh Agent Database and try again.');
-   path='/rest/v1/crm_records?id=eq.'+encodeURIComponent(targetId)+'&kind=eq.'+encodeURIComponent(type);
-   verifyPath='/rest/v1/crm_records?select=id,kind&id=eq.'+encodeURIComponent(targetId)+'&kind=eq.'+encodeURIComponent(type)+'&limit=1';
+   // Use the database primary key carried by the selected row. `dbid` is not defined in this scope.
+   const targetId=canonicalRowId||r._dbid;
+   if(targetId===undefined||targetId===null||String(targetId)==='')throw new Error('The database record ID is missing. Refresh the list and try again.');
+   path='/rest/v1/crm_records?id=eq.'+encodeURIComponent(targetId)+'&kind=eq.'+encodeURIComponent(EPH_KIND_MAP[type]||type);
+   verifyPath='/rest/v1/crm_records?select=id,kind&id=eq.'+encodeURIComponent(targetId)+'&kind=eq.'+encodeURIComponent(EPH_KIND_MAP[type]||type)+'&limit=1';
   }
   await ephRequest(path,{method:'DELETE',headers:{Prefer:'return=representation'}});
   // Confirm by reading the exact row after DELETE. PostgREST may return no representation
@@ -400,29 +392,7 @@ async function ephDeleteRecord(type,id){
   if(Array.isArray(check.data)&&check.data.length){
    throw new Error('Supabase still returns this record after DELETE. Check the table DELETE RLS policy for your signed-in Admin user, and confirm the row ID/kind. No other records were targeted.');
   }
-  // Agent Database has a Google Form source table that the sync worker re-imports on every load.
-  // Delete only the source request(s) linked to this exact Agent, otherwise the deleted profile returns.
-  if(type==='agent'&&deletedAgentMeta){
-   try{
-    const sq=await ephRequest('/rest/v1/crm_cobroke_requests?select=*&limit=5000');
-    const sourceRows=Array.isArray(sq.data)?sq.data:[];
-    const norm=v=>String(v==null?'':v).trim().toLowerCase().replace(/\D/g,'');
-    const codeOf=x=>String(x.crm_agent_code||x.agent_code||x.agentCode||x.customer_id||x.customerCode||x.displayCode||(x.data&& (x.data.crm_agent_code||x.data.agent_code||x.data.agentCode||x.data.displayCode))||'').trim().toUpperCase();
-    const nameOf=x=>String(x.agent_name||x.agentName||x.name||(x.data&&(x.data.agent_name||x.data.agentName||x.data.name||x.data.full_name))||'').trim().toLowerCase();
-    const phoneOf=x=>String(x.phone||x.mobile||x.agent_phone||(x.data&&(x.data.phone||x.data.mobile))||'');
-    const matches=sourceRows.filter(x=>{
-     if(deletedAgentMeta.requestId&&String(x.id)===deletedAgentMeta.requestId)return true;
-     if(deletedAgentMeta.code&&/^(AB|AGBK)\d+$/.test(deletedAgentMeta.code)&&codeOf(x)===deletedAgentMeta.code)return true;
-     return !!(deletedAgentMeta.name&&deletedAgentMeta.phone&&nameOf(x)===deletedAgentMeta.name.toLowerCase()&&norm(phoneOf(x))===norm(deletedAgentMeta.phone));
-    });
-    for(const source of matches){
-     await ephRequest('/rest/v1/crm_cobroke_requests?id=eq.'+encodeURIComponent(String(source.id)),{method:'DELETE',headers:{Prefer:'return=minimal'}});
-     const verifySource=await ephRequest('/rest/v1/crm_cobroke_requests?select=id&id=eq.'+encodeURIComponent(String(source.id))+'&limit=1');
-     if(Array.isArray(verifySource.data)&&verifySource.data.length)throw new Error('Linked Google Form request '+source.id+' still exists; check DELETE RLS on crm_cobroke_requests.');
-    }
-   }catch(sourceErr){throw new Error('Agent row deleted, but its saved Google Form source may still re-import it: '+(sourceErr.message||sourceErr));}
-  }
-  await loadCRMData();await loadCloudListings();toast('Record deleted from Supabase and verified.');
+  await loadCRMData();await loadCloudListings();if(typeof window.render==='function')window.render();else if(typeof window.ephRefreshAgreementStatistics==='function')window.ephRefreshAgreementStatistics();if(typeof window.ephRefreshAgreementStats==='function')window.ephRefreshAgreementStats();toast('Record deleted from Supabase and verified; agreement statistics refreshed.');
  }catch(e){toast('Delete failed: '+e.message,true)}
 }
 
@@ -719,7 +689,7 @@ let ephPublicAllListings=[],ephPublicExpanded={featured:false,direct:false,cobro
 const ephPublicOpenRows=new Set(),ephPublicOpenExtra={direct:new Set(),cobroke:new Set()};
 function ephNormCat(x){x=String(x||'').toLowerCase();if(x.includes('commercial'))return 'COMMERCIAL';if(x.includes('factory')||x.includes('industrial'))return 'FACTORY';if(x.includes('land'))return 'LAND';if(x.includes('house')||x.includes('residential'))return 'HOUSE';return x.toUpperCase();}
 function ephDriveUrl(x){const s=String(x||'').trim();return /^https?:\/\//i.test(s)&&!s.startsWith('EPH_PHOTOS_JSON:')?s:'';}
-function ephPublicCard(x){const imgs=(x.photos||[]).filter(u=>typeof u==='string'&&u.trim()).slice(0,5);if(!imgs.length&&x.photo)imgs.push(x.photo);const folder=ephDriveUrl(x.photoFolder);const imageStrip=`<div class="eph-photo-strip">${Array.from({length:5},(_,i)=>{const u=imgs[i];return u?`<a href="${escapePublic(u)}" target="_blank" rel="noopener" title="Open photo ${i+1}"><img src="${escapePublic(u)}" alt="Property photo ${i+1}" loading="${i===0?'eager':'lazy'}" decoding="async" fetchpriority="${i===0?'high':'low'}" onerror="this.closest('a')?.classList.add('eph-photo-failed');this.alt='Photo unavailable';this.style.opacity='.25'"></a>`:`<div class="eph-photo-placeholder" aria-label="Property photo ${i+1} loading">${x._photoLoadFailed?'Photo unavailable':(x.photoFolder?'Loading photo '+(i+1):'No photo '+(i+1))}</div>`;}).join('')}</div>`;return `<article class="public-card eph-public-card"><div class="public-card-art" ${imgs[0]?`style="background-image:url('${escapePublic(imgs[0])}');background-size:cover;background-position:center"`:''}>${imgs.length?'':'⌂'}</div><div class="public-card-body"><small>${escapePublic(x.cat)} · ${x.source==='cobroke'?'LISTING':'DIRECT OWNER'}</small><strong>${escapePublic(x.name)}</strong><p>${escapePublic([x.ref,x.location,x.size].filter(Boolean).join(' · '))}</p><div class="public-price">${escapePublic(String(x.price).match(/^RM/i)?String(x.price):'RM '+x.price)}</div>${imageStrip}${folder?`<p class="eph-drive-link"><a href="${escapePublic(folder)}" target="_blank" rel="noopener">Google Drive Photo Folder ↗</a></p>`:''}<button class="btn small eph-view-property" onclick="ephOpenPublicListing('${escapePublic(x._key)}')">View Details</button></div></article>`;}
+function ephPublicCard(x){const imgs=(x.photos||[]).filter(u=>typeof u==='string'&&u.trim()).slice(0,5);if(!imgs.length&&x.photo)imgs.push(x.photo);const folder=ephDriveUrl(x.photoFolder);const imageStrip=`<div class="eph-photo-strip">${Array.from({length:5},(_,i)=>{const u=imgs[i];return u?`<a href="${escapePublic(u)}" target="_blank" rel="noopener" title="Open photo ${i+1}"><img src="${escapePublic(u)}" alt="Property photo ${i+1}" loading="${i===0?'eager':'lazy'}" decoding="async" fetchpriority="${i===0?'high':'low'}"></a>`:`<div class="eph-photo-placeholder" aria-label="Property photo ${i+1} loading">${x.photoFolder?'Loading photo '+(i+1):'No photo '+(i+1)}</div>`;}).join('')}</div>`;return `<article class="public-card eph-public-card"><div class="public-card-art" ${imgs[0]?`style="background-image:url('${escapePublic(imgs[0])}');background-size:cover;background-position:center"`:''}>${imgs.length?'':'⌂'}</div><div class="public-card-body"><small>${escapePublic(x.cat)} · ${x.source==='cobroke'?'LISTING':'DIRECT OWNER'}</small><strong>${escapePublic(x.name)}</strong><p>${escapePublic([x.ref,x.location,x.size].filter(Boolean).join(' · '))}</p><div class="public-price">${escapePublic(String(x.price).match(/^RM/i)?String(x.price):'RM '+x.price)}</div>${imageStrip}${folder?`<p class="eph-drive-link"><a href="${escapePublic(folder)}" target="_blank" rel="noopener">Google Drive Photo Folder ↗</a></p>`:''}<button class="btn small eph-view-property" onclick="ephOpenPublicListing('${escapePublic(x._key)}')">View Details</button></div></article>`;}
 function ephRenderListingGroup(id,items,group){const el=document.getElementById(id);if(!el)return;const expanded=!!ephPublicExpanded[group];el.innerHTML=items.length?items.map(ephPublicCard).join(''):'<div class="empty"><strong>No available listings</strong></div>';const old=document.getElementById(id+'More');if(old)old.remove();if(items.length>4){const b=document.createElement('button');b.id=id+'More';b.className='btn small eph-more-btn';b.textContent=expanded?'Show Less ↑':'View All Listings ('+items.length+') →';b.onclick=()=>{ephPublicExpanded[group]=!ephPublicExpanded[group];ephRenderAllPublicListingGroups();};el.insertAdjacentElement('afterend',b);}}
 function ephRenderAllPublicListingGroups(){const q=(document.getElementById('publicListingSearch')?.value||'').trim().toLowerCase();const filtered=ephPublicAllListings.filter(x=>!q||[x.name,x.ref,x.location,x.cat,x.source,x.size].join(' ').toLowerCase().includes(q));const top=[];for(const cat of EPH_PUBLIC_CAT_ORDER){const x=filtered.find(y=>y.cat===cat);if(x)top.push(x);}const featured=ephPublicExpanded.featured?filtered:top;ephRenderListingGroup('publicListingCards',featured,'featured');for(const [id,source,group] of [['directOwnerListingCards','direct','direct'],['cobrokeListingCards','cobroke','cobroke']]){const pool=filtered.filter(x=>x.source===source);const picks=[];for(const cat of EPH_PUBLIC_CAT_ORDER){const x=pool.find(y=>y.cat===cat);if(x)picks.push(x);}ephRenderListingGroup(id,ephPublicExpanded[group]?pool:picks,group);}}
 loadPublicListings=async function(){const cats=[['commercial_listings','COMMERCIAL'],['factory_listings','FACTORY'],['land_listings','LAND'],['house_listings','HOUSE']];const found=[];await Promise.all(cats.map(async ([table,cat])=>{try{const r=await fetch(EPH_SUPABASE_URL+'/rest/v1/'+table+'?select=*&limit=2000',{headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY}});if(!r.ok)return;for(const row of await r.json()){const get=(...keys)=>{for(const k of keys)if(row[k]!=null&&row[k]!=='')return row[k];return ''};const status=String(get('status','Status')||'Available').toLowerCase();if(/not available|sold|rented|withdrawn|unavailable|reserved/.test(status))continue;const rawSource=String(get('source','listing_source','Source','Listing Source')||'Direct Owner').toLowerCase();const source=/co.?broke/.test(rawSource)?'cobroke':'direct';const rawPf=String(get('photo_folder','photo_folder_url','Photo Folder')||'');const pf=rawPf.startsWith('EPH_PHOTOS_JSON:')?String(get('photo_folder_url','Photo Folder URL','drive_folder_url')||rawPf):rawPf;let photos=[];let decodedFolder=pf;if(pf.startsWith('EPH_PHOTOS_JSON:')){try{const parsed=JSON.parse(pf.slice(16));if(Array.isArray(parsed))photos=parsed;else if(parsed&&typeof parsed==='object'){photos=Array.isArray(parsed.photos)?parsed.photos:[];decodedFolder=String(parsed.folder||get('photo_folder_url','Photo Folder URL','drive_folder_url')||'');}}catch(e){}}else photos=[get('photo_1','photo1','image_1'),get('photo_2','photo2','image_2'),get('photo_3','photo3','image_3'),get('photo_4','photo4','image_4'),get('photo_5','photo5','image_5')].filter(Boolean);const x={_key:table+'-'+String(row.id??get('reference_number','reference','ref','listing_reference')??found.length),_table:table,_id:row.id,cat,ref:get('reference_number','reference','ref','listing_reference','Reference Number')||'Property listing',name:get('name','property_name','title','Name')||'Property Opportunity',location:[get('area','Area'),get('state','State')].filter(Boolean).join(', '),size:get('land_size','land_size_sqft','size_sqft','build_up_sqft','size','build_up','Size','Land Size'),price:get('asking_price_rental','asking_price','asking','price','rental','Asking Price (RM)')||'Contact for price',source,photo:get('cover_photo','photo_url','image_url','photo'),photoFolder:decodedFolder,photos};found.push(x);}}catch(e){}}));
@@ -732,33 +702,8 @@ function ephOpenPublicListing(key){const x=ephPublicAllListings.find(y=>y._key==
 const EPH_DRIVE_PHOTO_API_URL='https://script.google.com/macros/s/AKfycby5S9GW37fm8uHSpKWf1MPMfnEFl3skLvuAm_7oMt6K3Iuil03Z7EAcNOJQNqbs_zNT/exec';
 const EPH_DRIVE_PHOTO_CACHE=new Map();
 function ephExtractDriveFolderId(value){const s=String(value||'').trim();if(!s||s.startsWith('EPH_PHOTOS_JSON:'))return '';let m=s.match(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([\w-]+)/i);if(m)return m[1];m=s.match(/[?&]id=([\w-]+)/i);return m?m[1]:'';}
-function ephLoadDrivePhotos(folderUrl){return new Promise(resolve=>{
- const folderId=ephExtractDriveFolderId(folderUrl);if(!folderId||!EPH_DRIVE_PHOTO_API_URL){resolve([]);return;}
- if(EPH_DRIVE_PHOTO_CACHE.has(folderId)){resolve(EPH_DRIVE_PHOTO_CACHE.get(folderId));return;}
- const callback='ephDriveJsonp_'+Math.random().toString(36).slice(2);let done=false;const script=document.createElement('script');
- const toUrl=p=>{
-  let v='';
-  if(typeof p==='string')v=p.trim();
-  else if(p&&typeof p==='object'){
-   v=String(p.thumbnailUrl||p.thumbnail_url||p.thumbnailLink||p.url||p.imageUrl||p.image_url||p.webContentLink||p.downloadUrl||p.download_url||p.src||p.photo||'').trim();
-   if(!v){const id=String(p.id||p.fileId||p.file_id||p.driveId||'').trim();if(id)v='https://drive.google.com/thumbnail?id='+encodeURIComponent(id)+'&sz=w1200';}
-  }
-  if(!v)return '';
-  let m=v.match(/drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:[^#]*&)?id=|thumbnail\?(?:[^#]*&)?id=)([A-Za-z0-9_-]+)/i);
-  if(m&&/drive\.google\.com\/(?:file\/d\/|open\?|uc\?|thumbnail\?)/i.test(v))return 'https://drive.google.com/thumbnail?id='+encodeURIComponent(m[1])+'&sz=w1200';
-  m=v.match(/[?&]id=([A-Za-z0-9_-]+)/i);
-  if(m&&/drive\.google\.com/i.test(v)&&!/thumbnail\?/i.test(v))return 'https://drive.google.com/thumbnail?id='+encodeURIComponent(m[1])+'&sz=w1200';
-  return v;
- };
- const toName=p=>String(p&&(p.fileName||p.filename||p.name||p.title)||'');
- const cleanup=()=>{try{delete window[callback]}catch(e){}if(script.parentNode)script.parentNode.removeChild(script);};
- const finish=data=>{if(done)return;done=true;clearTimeout(timer);cleanup();let raw=[];if(Array.isArray(data))raw=data;else if(data&&typeof data==='object'){const d=data.result||data.response||data.payload||data;raw=Array.isArray(d)?d:Array.isArray(d.photos)?d.photos:Array.isArray(d.files)?d.files:Array.isArray(d.images)?d.images:Array.isArray(d.data)?d.data:Array.isArray(d.items)?d.items:[];if(!raw.length&&d&&typeof d==='object'&&(d.url||d.id||d.fileId||d.file_id))raw=[d];}
- const clean=raw.map((p,i)=>({url:toUrl(p),name:toName(p),i})).filter(p=>p.url&&/^https?:\/\//i.test(p.url)).sort((a,b)=>a.name&&b.name?a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}):a.i-b.i).slice(0,5).map(p=>p.url);
- if(clean.length)EPH_DRIVE_PHOTO_CACHE.set(folderId,clean);else EPH_DRIVE_PHOTO_CACHE.delete(folderId);resolve(clean);};
- window[callback]=data=>finish(data&&data.ok===false?[]:data);script.src=EPH_DRIVE_PHOTO_API_URL+(EPH_DRIVE_PHOTO_API_URL.includes('?')?'&':'?')+'folderId='+encodeURIComponent(folderId)+'&callback='+encodeURIComponent(callback);
- script.onerror=()=>finish([]);const timer=setTimeout(()=>finish([]),15000);document.head.appendChild(script);
- });}
-async function ephHydrateDrivePhotos(items){let changed=false;await Promise.all(items.filter(x=>x.photoFolder&&!(x.photos||[]).length&&!x._photoLoadFailed).map(async x=>{const photos=await ephLoadDrivePhotos(x.photoFolder);if(photos.length){x.photos=photos;x.photo=photos[0];x._photoLoadFailed=false;}else{x._photoLoadFailed=true;}changed=true;}));if(changed&&typeof ephRenderAllPublicListingGroups==='function')ephRenderAllPublicListingGroups();}
+function ephLoadDrivePhotos(folderUrl){return new Promise(resolve=>{const folderId=ephExtractDriveFolderId(folderUrl);if(!folderId||!EPH_DRIVE_PHOTO_API_URL){resolve([]);return;}if(EPH_DRIVE_PHOTO_CACHE.has(folderId)){resolve(EPH_DRIVE_PHOTO_CACHE.get(folderId));return;}const callback='ephDriveJsonp_'+Math.random().toString(36).slice(2);let done=false;const cleanup=()=>{try{delete window[callback]}catch(e){}if(script.parentNode)script.parentNode.removeChild(script);};const finish=photos=>{if(done)return;done=true;clearTimeout(timer);cleanup();const clean=Array.isArray(photos)?photos.filter(p=>p&&p.url).sort((a,b)=>String(a.fileName||a.name||'').localeCompare(String(b.fileName||b.name||''),undefined,{numeric:true,sensitivity:'base'})).slice(0,5).map(p=>p.url):[];EPH_DRIVE_PHOTO_CACHE.set(folderId,clean);resolve(clean);};window[callback]=data=>finish(data&&data.ok?data.photos:[]);const script=document.createElement('script');script.src=EPH_DRIVE_PHOTO_API_URL+(EPH_DRIVE_PHOTO_API_URL.includes('?')?'&':'?')+'folderId='+encodeURIComponent(folderId)+'&callback='+encodeURIComponent(callback);script.onerror=()=>finish([]);const timer=setTimeout(()=>finish([]),12000);document.head.appendChild(script);});}
+async function ephHydrateDrivePhotos(items){let changed=false;await Promise.all(items.filter(x=>x.photoFolder&&!(x.photos||[]).length).map(async x=>{const photos=await ephLoadDrivePhotos(x.photoFolder);if(photos.length){x.photos=photos;x.photo=photos[0];changed=true;}}));if(changed)ephRenderAllPublicListingGroups();}
 const EPH_FORM_PREFILL_ENTRY_IDS={listingReference:['409758116','1926053645','1505875767'],requestType:'',preferredDate:'',preferredTime:''};
 function ephBridgeJsonp(params,timeoutMs=12000){return new Promise((resolve,reject)=>{if(!EPH_DRIVE_PHOTO_API_URL){reject(new Error('Google Apps Script bridge URL is not configured yet.'));return;}const cb='ephBridgeCb_'+Math.random().toString(36).slice(2);const script=document.createElement('script');let done=false;const finish=(err,data)=>{if(done)return;done=true;clearTimeout(timer);try{delete window[cb]}catch(e){}script.remove();err?reject(err):resolve(data)};window[cb]=data=>finish(null,data);script.onerror=()=>finish(new Error('Google Apps Script bridge could not be reached.'));const q=new URLSearchParams({...params,callback:cb});script.src=EPH_DRIVE_PHOTO_API_URL+(EPH_DRIVE_PHOTO_API_URL.includes('?')?'&':'?')+q.toString();const timer=setTimeout(()=>finish(new Error('Google Apps Script bridge timed out.')),timeoutMs);document.head.appendChild(script);});}
 function ephOpenListingForm(key,requestType){const x=(ephPublicAllListings||[]).find(y=>String(y._key)===String(key));if(!x){alert('This listing could not be found. Please refresh Customer View and try again.');return;}const base='https://docs.google.com/forms/d/e/1FAIpQLScVa1dLYI3UE_mZual2X1cetQZI93WNoLvnNQiAnICXjeyXhw/viewform';const params=new URLSearchParams({usp:'pp_url'});let canPrefill=false;const add=(field,value)=>{const configured=EPH_FORM_PREFILL_ENTRY_IDS[field];const ids=Array.isArray(configured)?configured:[configured];ids.filter(id=>id&&String(id).trim()).forEach(id=>{params.set('entry.'+String(id).replace(/^entry\./,''),String(value??''));canPrefill=true;});};add('listingReference',x.ref);add('requestType',requestType);const url=base+'?'+params.toString();window.open(url,'_blank','noopener');if(!canPrefill)alert('Google Form opened. Listing Reference: '+x.ref+' ('+x.name+'). Automatic prefill is not configured.');}
@@ -1239,6 +1184,7 @@ async function ephEditOwnerForListing(ref){
    if(row)await ephRequest('/rest/v1/crm_records?id=eq.'+encodeURIComponent(row.id),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({data,updated_at:now})});else await ephRequest('/rest/v1/crm_records',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({id:ephNewDbRecordId('agent_attachment'),kind:'agent_attachment',data,updated_at:now})});
  }
  async function save(r,d,isNew){
+  const secondaryErrors=[];
   ephRequireAdmin();
   if(!String(d.name||'').trim())throw Error('Agent / Broker Name is required.');
   const upload=document.getElementById('f_agentFile')?.files?.[0]||null;
@@ -1291,6 +1237,58 @@ async function ephEditOwnerForListing(ref){
     if(!Array.isArray(result.data)||!result.data.length)throw new Error('Supabase did not confirm the Agent record in crm_records.');
     savedRow=result.data[0];
   }
+  // Also persist every manually-created/edited Agent/Broker in the existing
+  // crm_cobroke_requests table. Use confirmed/common table columns only so the
+  // request is not rejected because an optional column is absent in this project.
+  try{
+    let legacyRows=[];
+    const legacyScan=await ephRequest('/rest/v1/crm_cobroke_requests?select=*&limit=5000');
+    legacyRows=Array.isArray(legacyScan.data)?legacyScan.data:[];
+    const rowCode=x=>String(x.crm_agent_code||x.agent_code||x.agentCode||x.displayCode||x.customer_id||'').trim().toUpperCase();
+    let cobrokeRow=legacyRows.find(x=>rowCode(x)===code.toUpperCase())||null;
+    if(!cobrokeRow&&phoneNorm)cobrokeRow=legacyRows.find(x=>phoneKey(x.phone||x.mobile||x.agent_phone||'')===phoneNorm)||null;
+    if(!cobrokeRow&&clean.name)cobrokeRow=legacyRows.find(x=>String(x.agent_name||x.agentName||x.name||'').trim().toLowerCase()===String(clean.name).trim().toLowerCase())||null;
+    const cobrokePayload={
+      agent_name:clean.name||'',
+      agency:clean.company||'',
+      phone:clean.phone||'',
+      email:clean.email||'',
+      requirement_type:clean.specialty||clean.requirementType||'',
+      buy_rent:clean.mode||'',
+      property_type:clean.specialty||'',
+      location:clean.location||'',
+      budget:clean.budget||'',
+      commission_amount:Number(clean.commissionAmount)||0,
+      commission_received:Number(clean.commissionReceived)||0,
+      // crm_agent_code is not present in every deployed crm_cobroke_requests schema.
+      // Keep the CRM identity in crm_records; match the legacy request by phone/name.
+      updated_at:now
+    };
+    if(cobrokeRow){
+      const cw=await ephRequest('/rest/v1/crm_cobroke_requests?id=eq.'+encodeURIComponent(String(cobrokeRow.id)),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify(cobrokePayload)});
+      if(!Array.isArray(cw.data)||!cw.data.length)throw new Error('Existing crm_cobroke_requests row update was not confirmed.');
+    }else{
+      // Some existing projects define crm_cobroke_requests.id as NOT NULL without a
+      // database default. Detect the type from existing rows when possible; if the
+      // table is empty, try safe candidate IDs in order and only continue when the
+      // server confirms the insert. Failed type attempts do not create rows.
+      const sampleId=legacyRows.find(x=>x.id!==undefined&&x.id!==null)?.id;
+      const candidates=[];
+      if(typeof sampleId==='number' || (sampleId!==undefined && /^\d+$/.test(String(sampleId)))) candidates.push(ephNewDbRecordId('cobroke'));
+      else if(typeof sampleId==='string' && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(sampleId)) candidates.push((crypto.randomUUID?crypto.randomUUID():('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&3|8)).toString(16)}))));
+      else if(sampleId!==undefined) candidates.push('COBROKE-'+code+'-'+Date.now());
+      else candidates.push('COBROKE-'+code+'-'+Date.now(),ephNewDbRecordId('cobroke'),(crypto.randomUUID?crypto.randomUUID():('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&3|8)).toString(16)}))));
+      let inserted=null,lastInsertError=null;
+      for(const candidateId of candidates){
+        try{
+          const cw=await ephRequest('/rest/v1/crm_cobroke_requests',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({...cobrokePayload,id:candidateId})});
+          if(Array.isArray(cw.data)&&cw.data.length){inserted=cw.data[0];break;}
+          lastInsertError=new Error('Supabase did not confirm the Agent/Broker insert in crm_cobroke_requests.');
+        }catch(insertErr){lastInsertError=insertErr;}
+      }
+      if(!inserted)throw new Error('Could not create crm_cobroke_requests row with an ID compatible with this table: '+(lastInsertError?.message||'unknown error'));
+    }
+  }catch(cobrokeErr){secondaryErrors.push('Co-broke record: '+(cobrokeErr.message||cobrokeErr));}
   // Keep legacy source rows in sync where possible, but the complete profile above
   // remains saved in crm_records so commission, viewing and agreement fields persist.
   if(!isNew&&r._sourceTable==='crm_cobroke_requests'&&dbid){
@@ -1305,8 +1303,38 @@ async function ephEditOwnerForListing(ref){
     if(!Array.isArray(result.data)||!result.data.length)console.warn('Canonical Agent profile saved; legacy crm_leads row was not updated.');
   }
   clean._dbid=savedRow.id;clean._sourceTable='crm_records';
-  const secondaryErrors=[];
   try{await ephSaveAgentAttachment(clean,upload);}catch(fileErr){secondaryErrors.push('Attachment: '+(fileErr.message||fileErr));}
+  // Persist an idempotent Agent-linked SPA/Tenancy tracker record. The row is explicitly
+  // marked as an Agent agreement tracker entry; it is not represented as signed unless status says so.
+  try{
+    const agreementKind=String(clean.contractKind||'SPA').trim()==='Tenancy Agreement'?'Tenancy Agreement':'SPA';
+    const agreementStatus=String(clean.contractStatus||clean.latestAgreementStatus||'Other / Blank').trim()||'Other / Blank';
+    const linkedId=String(clean.linkedAgreementId||'').trim();
+    const scan=await ephRequest('/rest/v1/crm_records?select=id,kind,data,updated_at&kind=eq.lease&limit=5000');
+    const rows=Array.isArray(scan.data)?scan.data:[];
+    let existing=rows.find(x=>String(x.data?.agentRef||x.data?.agentCode||'').trim().toUpperCase()===code.toUpperCase()&&x.data?.agentProfileTracker===true&&String(x.data?.kind||x.data?.kindLabel||'').trim().toLowerCase()===agreementKind.toLowerCase());
+    if(!existing&&linkedId)existing=rows.find(x=>String(x.id)===linkedId&&String(x.data?.agentRef||'').trim().toUpperCase()===code.toUpperCase());
+    const agreementNow=new Date().toISOString();
+    const agreement={...(existing?.data||{}),id:existing?.data?.id||('DOC-AG-'+code+'-'+(agreementKind==='SPA'?'SPA':'TEN')),ref:code,person:clean.name,property:clean.appointmentProperty||clean.listingRef||'',kind:agreementKind,kindLabel:agreementKind,status:agreementStatus,date:clean.contractStartDate||existing?.data?.date||'',leaseStart:clean.contractStartDate||existing?.data?.leaseStart||'',leaseEnd:clean.contractEndDate||existing?.data?.leaseEnd||'',remindDays:Number(clean.contractReminderDays)||30,documentName:clean.contractFileName||existing?.data?.documentName||'',documentData:clean.contractFileData||existing?.data?.documentData||'',documentUrl:clean.contractDocumentUrl||existing?.data?.documentUrl||'',agentRef:code,agentCode:code,agentName:clean.name,agentPhone:clean.phone||'',agentAgency:clean.company||'',agentDbId:String(savedRow.id),agentProfileTracker:true,created_at:existing?.data?.created_at||agreementNow,updated_at:agreementNow};
+    let savedAgreement;
+    if(existing){
+      const w=await ephRequest('/rest/v1/crm_records?id=eq.'+encodeURIComponent(String(existing.id))+'&kind=eq.lease',{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({data:agreement,updated_at:agreementNow})});
+      if(!Array.isArray(w.data)||!w.data.length)throw new Error('Supabase did not confirm the linked Agreement Tracker update.');
+      savedAgreement=w.data[0];
+    }else{
+      const w=await ephRequest('/rest/v1/crm_records',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({id:ephNewDbRecordId('lease'),kind:'lease',data:agreement,updated_at:agreementNow})});
+      if(!Array.isArray(w.data)||!w.data.length)throw new Error('Supabase did not confirm the linked Agreement Tracker record.');
+      savedAgreement=w.data[0];
+    }
+    const agentData={...(savedRow.data||clean),linkedAgreementId:String(savedAgreement.id),latestAgreementId:String(savedAgreement.id),latestAgreementKind:agreementKind,latestAgreementStatus:agreementStatus,updated_at:agreementNow};
+    const linkedAgent=await ephRequest('/rest/v1/crm_records?id=eq.'+encodeURIComponent(String(savedRow.id))+'&kind=eq.agent',{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({data:agentData,updated_at:agreementNow})});
+    if(!Array.isArray(linkedAgent.data)||!linkedAgent.data.length)throw new Error('Agreement saved, but Agent record link was not confirmed.');
+    // RLS fallback: the linked agreement has already been saved to crm_records (kind=lease)
+    // and the Agent row contains linkedAgreementId. The central-table mirror currently rejects
+    // authenticated inserts in this project despite the configured policy. Do not turn a successful
+    // Agent + Agreement save into a misleading failure or attempt to weaken database security here.
+    // loadCRMData() retains the crm_records lease row as the Agreement Tracker fallback.
+  }catch(agreementErr){secondaryErrors.push('Agreement Tracker link: '+(agreementErr.message||agreementErr));}
   if(d.appointmentDate){const sig=[code,d.appointmentDate,d.appointmentTime||'',d.appointmentProperty||'',d.appointmentResult||'Pending'].join('|');if(!appointments.some(a=>a.agentAppointmentSignature===sig)){try{await ephSaveKind('viewing',{id:'VW-'+Date.now(),date:d.appointmentDate,time:d.appointmentTime||'',person:clean.name,ref:code,kindLabel:'Agent / Co-broke',property:d.appointmentProperty||'',status:d.appointmentResult||'Pending',remark:d.appointmentRemark||'',agentAppointmentSignature:sig},null);}catch(viewErr){secondaryErrors.push('Viewing reminder: '+(viewErr.message||viewErr));}}}
   closeModal();
   try{if(typeof window.ephAgentAuthoritativeSync==='function')await window.ephAgentAuthoritativeSync();else await loadCRMData();}catch(reloadErr){secondaryErrors.push('Refresh: '+(reloadErr.message||reloadErr));}
@@ -2029,16 +2057,25 @@ commissionPage=function(){
   function openViewingModal(key){
     const x=(ephPublicAllListings||[]).find(y=>String(y._key)===String(key));if(!x)return;
     let back=document.getElementById('ephCustomerViewingModal');
-    if(!back){back=document.createElement('div');back.id='ephCustomerViewingModal';back.className='modal-backdrop';back.style.zIndex='10050';back.innerHTML=`<div class="modal" style="max-width:620px;width:min(620px,96vw)"><div class="modal-head"><h3>Request a Viewing</h3><button type="button" class="btn small" id="ephViewingClose">✕</button></div><div class="modal-content"><p class="muted" style="margin-top:0">Submit your preferred time. Your request will be sent to Evelyn by WhatsApp and saved to the CRM when public database permissions allow.</p><form id="ephCustomerViewingForm"><div class="form-grid"><div class="form-group full"><label>Listing Reference</label><input class="field" id="ephViewingRef" readonly></div><div class="form-group full"><label>Property</label><input class="field" id="ephViewingProperty" readonly></div><div class="form-group"><label>Your Name *</label><input class="field" id="ephViewingName" required autocomplete="name"></div><div class="form-group"><label>Phone / WhatsApp *</label><input class="field" id="ephViewingPhone" required autocomplete="tel" inputmode="tel"></div><div class="form-group"><label>Preferred Date *</label><input class="field" id="ephViewingDate" type="date" required></div><div class="form-group"><label>Preferred Time *</label><input class="field" id="ephViewingTime" type="time" required></div><div class="form-group full"><label>Message (optional)</label><textarea class="field" id="ephViewingRemark" rows="3" placeholder="How many people will attend, or other notes"></textarea></div></div><div id="ephViewingStatus" class="muted" aria-live="polite" style="margin:10px 0"></div><div class="actions"><button class="btn gold" type="submit">Submit Viewing Request & WhatsApp</button><button class="btn" type="button" id="ephViewingCancel">Cancel</button></div></form></div></div>`;document.body.appendChild(back);const close=()=>back.classList.remove('show');back.querySelector('#ephViewingClose').addEventListener('click',close);back.querySelector('#ephViewingCancel').addEventListener('click',close);back.addEventListener('click',e=>{if(e.target===back)close();});back.querySelector('#ephCustomerViewingForm').addEventListener('submit',async ev=>{ev.preventDefault();const status=back.querySelector('#ephViewingStatus');const name=txt(back.querySelector('#ephViewingName').value),phone=txt(back.querySelector('#ephViewingPhone').value),date=txt(back.querySelector('#ephViewingDate').value),time=txt(back.querySelector('#ephViewingTime').value),remark=txt(back.querySelector('#ephViewingRemark').value);if(!name||!phone||!date||!time){status.textContent='Please complete name, phone, preferred date and time.';return;}
+    if(!back){back=document.createElement('div');back.id='ephCustomerViewingModal';back.className='modal-backdrop';back.style.zIndex='10050';back.innerHTML=`<div class="modal" style="max-width:620px;width:min(620px,96vw)"><div class="modal-head"><h3>Request a Viewing</h3><button type="button" class="btn small" id="ephViewingClose">✕</button></div><div class="modal-content"><p class="muted" style="margin-top:0">Submit your preferred time. Your request is saved to the CRM and sent to Evelyn by WhatsApp; viewing remains pending until confirmed.</p><form id="ephCustomerViewingForm"><div class="form-grid"><div class="form-group full"><label>Listing Reference</label><input class="field" id="ephViewingRef" readonly></div><div class="form-group full"><label>Property</label><input class="field" id="ephViewingProperty" readonly></div><div class="form-group"><label>Your Name *</label><input class="field" id="ephViewingName" required autocomplete="name"></div><div class="form-group"><label>Phone / WhatsApp *</label><input class="field" id="ephViewingPhone" required autocomplete="tel" inputmode="tel"></div><div class="form-group"><label>Preferred Date *</label><input class="field" id="ephViewingDate" type="date" required></div><div class="form-group"><label>Preferred Time *</label><input class="field" id="ephViewingTime" type="time" required></div><div class="form-group full"><label>Message (optional)</label><textarea class="field" id="ephViewingRemark" rows="3" placeholder="How many people will attend, or other notes"></textarea></div></div><div id="ephViewingStatus" class="muted" aria-live="polite" style="margin:10px 0"></div><div class="actions"><button class="btn gold" type="submit">Submit Viewing Request & WhatsApp</button><button class="btn" type="button" id="ephViewingCancel">Cancel</button></div></form></div></div>`;document.body.appendChild(back);const close=()=>back.classList.remove('show');back.querySelector('#ephViewingClose').addEventListener('click',close);back.querySelector('#ephViewingCancel').addEventListener('click',close);back.addEventListener('click',e=>{if(e.target===back)close();});back.querySelector('#ephCustomerViewingForm').addEventListener('submit',async ev=>{ev.preventDefault();const status=back.querySelector('#ephViewingStatus');const name=txt(back.querySelector('#ephViewingName').value),phone=txt(back.querySelector('#ephViewingPhone').value),date=txt(back.querySelector('#ephViewingDate').value),time=txt(back.querySelector('#ephViewingTime').value),remark=txt(back.querySelector('#ephViewingRemark').value);if(!name||!phone||!date||!time){status.textContent='Please complete name, phone, preferred date and time.';return;}
       const ref=txt(back.querySelector('#ephViewingRef').value),property=txt(back.querySelector('#ephViewingProperty').value),location=txt(x.location),price=txt(x.price),now=new Date().toISOString();
       const message=['Viewing Appointment Request','Listing Reference: '+ref,'Property: '+property,'Location: '+(location||'—'),'Price: '+(price||'—'),'Customer: '+name,'Phone: '+phone,'Preferred Viewing: '+date+' '+time,'Message: '+(remark||'—'),'Please contact me to confirm the viewing.'].join('\n');
       const whatsapp=(typeof EPH_PROFILE_DEFAULT!=='undefined'&&EPH_PROFILE_DEFAULT.whatsapp)?String(EPH_PROFILE_DEFAULT.whatsapp).replace(/\D/g,''):'601153922261';
       const wa=window.open('about:blank','_blank');status.textContent='Saving your viewing request…';
-      const payload={id:'VW-CUST-'+Date.now(),date,time,person:name,phone,ref,kindLabel:'Customer View Appointment',kind:'Viewing',property,status:'Pending',remark,source:'Customer View',created_at:now,updated_at:now,customerName:name,customerPhone:phone,listingReference:ref,preferredDate:date,preferredTime:time};
-      let saved=false,saveError='';
-      try{if(EPH_DRIVE_PHOTO_API_URL){saved=await ephSubmitViewingViaBridge(payload);}else{const response=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records',{method:'POST',headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({id:payload.id,kind:'viewing',data:payload,updated_at:now})});if(!response.ok){const body=await response.text();throw new Error('HTTP '+response.status+' '+body.slice(0,180));}saved=true;}}catch(err){saveError=err&&err.message?err.message:String(err);}
+      const payload={id:'VW-CUST-'+Date.now(),date,time,person:name,phone,ref,kindLabel:'Customer View Appointment',kind:'viewing',property,status:'Pending',remark,source:'Customer View',created_at:now,updated_at:now,customerName:name,customerPhone:phone,listingReference:ref,preferredDate:date,preferredTime:time,listingCategory:txt(x.cat),listingSource:txt(x.source),listingId:txt(x._id),listingTable:txt(x._table),listingLocation:location,listingPrice:price};
+      let saved=false,saveError='',directError='';
+      // Write directly to Supabase first. The shared Apps Script URL is also used for photos,
+      // but must not block Customer View appointments when its bridge action times out.
+      try{
+        const response=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records',{method:'POST',headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({id:payload.id,kind:'viewing',data:payload,updated_at:now})});
+        if(!response.ok){const body=await response.text();throw new Error('Supabase HTTP '+response.status+': '+body.slice(0,260));}
+        saved=true;
+      }catch(err){directError=err&&err.message?err.message:String(err);}
+      // Fallback to the Apps Script bridge only if direct Supabase INSERT fails.
+      if(!saved&&EPH_DRIVE_PHOTO_API_URL){try{saved=await ephSubmitViewingViaBridge(payload);}catch(err){saveError=err&&err.message?err.message:String(err);}}
+      if(!saved)saveError=[directError,saveError].filter(Boolean).join(' | ');
       const waUrl='https://wa.me/'+whatsapp+'?text='+encodeURIComponent(message);if(wa){try{wa.location.href=waUrl;}catch(e){window.open(waUrl,'_blank','noopener');}}else window.open(waUrl,'_blank','noopener');
-      status.textContent=saved?'Request saved to CRM and WhatsApp message opened. Your viewing is pending confirmation.':'WhatsApp message opened. CRM auto-save was blocked by Supabase permissions; please ensure public INSERT is allowed for viewing requests. '+saveError;
+      status.textContent=saved?'Request saved to CRM and WhatsApp message opened. Your viewing is pending confirmation.':'WhatsApp message opened, but CRM save failed. Supabase/bridge error: '+(saveError||'Unknown save error');
       if(saved){try{if(typeof loadCRMData==='function')await loadCRMData();if(typeof render==='function'&&typeof currentPage!=='undefined'&&currentPage==='viewings')render();}catch(e){}}
     });}
     back.querySelector('#ephViewingRef').value=txt(x.ref);back.querySelector('#ephViewingProperty').value=txt(x.name);back.querySelector('#ephViewingDate').min=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kuala_Lumpur',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());back.querySelector('#ephViewingStatus').textContent='';back.classList.add('show');
@@ -2527,10 +2564,12 @@ function ephCommissionDashboardStats(){
    const pn=phoneKey(raw.phone);
    // Requests without a stable contact identity are left untouched for review.
    if(!pn&&!raw.name){skipped++;continue;}
-   let existing=canonical.find(x=>candidateCode&&getCode(x.data||{})===candidateCode);
+   let existing=canonical.find(x=>String(x.data?.googleFormRequestId||'')===String(r.id||''));
+   if(!existing)existing=canonical.find(x=>candidateCode&&getCode(x.data||{})===candidateCode);
    if(!existing&&pn)existing=canonical.find(x=>phoneKey((x.data||{}).phone||(x.data||{}).mobile)===pn);
-   // An import marker alone is not enough: if the canonical Agent was cleared,
-   // recreate it from the retained request instead of permanently skipping it.
+   // The request ID stored in crm_records is the durable import marker. The legacy
+   // crm_cobroke_requests table may not have crm_imported/crm_agent_code columns.
+   if(existing&&String(existing.data?.googleFormRequestId||'')===String(r.id||'')){skipped++;continue;}
    if(r.crm_imported===true&&existing){skipped++;continue;}
    // Keep an existing canonical Agent code stable when another request has the same phone.
    let code=existing?getCode(existing.data||{}):'';
@@ -2539,7 +2578,7 @@ function ephCommissionDashboardStats(){
    const now=iso();
    const old=existing&&existing.data&&typeof existing.data==='object'?existing.data:{};
    const nonBlank=Object.fromEntries(Object.entries(raw).filter(([k,v])=>v!==''&&v!=null&&k!=='_sourceRequestId'));
-   const data={...old,...nonBlank,id:code,displayCode:code,source:'Google Form',created_at:old.created_at||r.created_at||now,updated_at:now};
+   const data={...old,...nonBlank,id:code,displayCode:code,source:'Google Form',googleFormRequestId:String(r.id||''),created_at:old.created_at||r.created_at||now,updated_at:now};
    delete data._sourceRequestId;
    let saved;
    if(existing){
@@ -2551,10 +2590,10 @@ function ephCommissionDashboardStats(){
     if(!Array.isArray(w.data)||!w.data.length)throw new Error('Could not import Co-broke request '+r.id+' into Agent Database.');
     saved=w.data[0];canonical.push(saved);
    }
-   // Source row is retained; only mark it after canonical save succeeds.
-   const mark=await ephRequest('/rest/v1/crm_cobroke_requests?id=eq.'+encodeURIComponent(String(r.id)),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({crm_imported:true,crm_imported_at:now,crm_agent_code:code,updated_at:now})});
-   if(!Array.isArray(mark.data)||!mark.data.length)throw new Error('Agent '+code+' saved, but request '+r.id+' could not be marked imported. Check crm_imported/crm_agent_code columns and RLS.');
-   r.crm_imported=true;r.crm_agent_code=code;r.crm_imported_at=now;imported++;
+   // The canonical crm_records row now stores googleFormRequestId. Do not PATCH
+   // optional marker columns on crm_cobroke_requests: this deployment does not have
+   // crm_agent_code in its schema cache, and the source row must remain intact.
+   r.crm_imported=true;imported++;
   }
   return {imported,skipped,removed};
  }
@@ -2660,6 +2699,9 @@ function ephCommissionDashboardStats(){
     let max=0;for(const c of usedCodes)max=Math.max(max,codeNum(c,'AGBK'));
     let imported=0;
     for(const req of requests){
+      // Manual Co-broke rows use COBROKE-* IDs and already have AB-series IDs.
+      // They are not Google Form submissions and must never be imported as AGBK.
+      if(/^COBROKE-/i.test(String(req&&req.id||'')))continue;
       const raw=mapCobroke(req);if(!raw.name&&!raw.phone&&!raw.email)continue;
       let row=canonical.find(x=>String(x.data?.googleFormRequestId||'')===String(req.id||''))||null;
       const sourceCode=raw.displayCode;
@@ -2669,7 +2711,7 @@ function ephCommissionDashboardStats(){
       else{const old=row.data||{};raw.id=raw.displayCode=escTxt(old.displayCode||old.id)||raw.displayCode;}
       const now=new Date().toISOString();
       const old=row?.data&&typeof row.data==='object'?row.data:{};
-      const merged={...old,...Object.fromEntries(Object.entries(raw).filter(([k,v])=>!['_sourceRequestId'].includes(k)&&v!==''&&v!=null)),id:raw.displayCode,displayCode:raw.displayCode,source:'Google Form',created_at:old.created_at||raw.created_at||now,updated_at:now};
+      const merged={...old,...Object.fromEntries(Object.entries(raw).filter(([k,v])=>!['_sourceRequestId'].includes(k)&&v!==''&&v!=null)),id:raw.displayCode,displayCode:raw.displayCode,source:'Google Form',googleFormRequestId:String(req.id||''),created_at:old.created_at||raw.created_at||now,updated_at:now};
       delete merged._sourceRequestId;
       let saved;
       if(row){
@@ -2689,10 +2731,10 @@ function ephCommissionDashboardStats(){
         if(!Array.isArray(w.data)||!w.data.length)throw new Error('Could not create '+raw.displayCode+' in crm_records.');
         saved=w.data[0];canonical.push(saved);imported++;
       }
-      // Mark source only after canonical save succeeds. If these optional columns do not exist,
-      // do not make the Agent sync fail: the canonical CRM record is already safely saved.
-      try{await ephRequest('/rest/v1/crm_cobroke_requests?id=eq.'+encodeURIComponent(String(req.id)),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({crm_imported:true,crm_imported_at:now,crm_agent_code:raw.displayCode,updated_at:now})});}catch(markErr){console.warn('Co-broke source marker skipped:',markErr.message);}
-    }
+      // No optional source-table marker columns are written. Keep the stable request
+      // ID on the canonical CRM record instead, so this works with schemas that do
+      // not contain crm_agent_code or crm_imported fields.
+      }
     return imported;
   }
   async function authoritativeLoad(){
@@ -2701,12 +2743,25 @@ function ephCommissionDashboardStats(){
     await cleanupEmptyManual(before);
     await syncCobroke(before);
     const finalRows=await readCanonical();
-    const out=[];const seen=new Set();
+    // When an old erroneous AGBK duplicate shares a phone with a manual AB record,
+    // prefer the permanent manual identity. This is display/load deduplication only;
+    // it does not delete or rewrite any database row or commission value.
+    const priority=row=>{const d=row&&row.data&&typeof row.data==='object'?row.data:{};const c=escTxt(d.displayCode||d.id).toUpperCase();return /^AB\d+$/.test(c)?0:/^AGBK\d+$/.test(c)?1:2;};
+    finalRows.sort((a,b)=>priority(a)-priority(b));
+    const out=[];const seenPhones=new Set();
     for(const row of finalRows){
-      const d=row.data&&typeof row.data==='object'?row.data:{};
+      const original=row.data&&typeof row.data==='object'?row.data:{};
+      const sourceRequest=escTxt(original.googleFormRequestId||'');
+      // A legacy manual request can have been mislabeled AGBK by an earlier sync.
+      // Recover its AB identity from the original COBROKE-AB### source ID for display/edit,
+      // without changing the underlying Supabase primary key or commission fields.
+      const recovered=(sourceRequest.match(/^COBROKE-(AB\d+)-/i)||[])[1]||'';
+      const d=recovered?{...original,id:recovered.toUpperCase(),displayCode:recovered.toUpperCase(),source:'Manual'}:original;
       const code=escTxt(d.displayCode||d.id).toUpperCase();
       if(!isCode(code)||isEmptyAgent(d))continue;
-      const key=phoneKey(d.phone)||code;if(seen.has(key))continue;seen.add(key);
+      const pk=phoneKey(d.phone);
+      if(pk&&seenPhones.has(pk))continue;
+      if(pk)seenPhones.add(pk);
       out.push({...d,id:code,displayCode:code,_dbid:row.id,_sourceTable:'crm_records',_kind:'agent',updated_at:row.updated_at||d.updated_at||d.created_at});
     }
     out.sort((a,b)=>Date.parse(b.updated_at||b.created_at||0)-Date.parse(a.updated_at||a.created_at||0));
@@ -2999,7 +3054,20 @@ function ephCommissionDashboardStats(){
 })();
 </script>
 
-
+<script id="eph-agreement-statistics-refresh-after-load">
+(function(){
+  const previous=window.loadCRMData;
+  if(typeof previous!=='function'||window.__ephStatsRefreshWrapped)return;
+  window.__ephStatsRefreshWrapped=true;
+  window.loadCRMData=async function(){
+    const result=await previous.apply(this,arguments);
+    try{if(typeof window.render==='function')window.render();}catch(e){}
+    try{if(typeof window.ephRefreshAgreementStatistics==='function')window.ephRefreshAgreementStatistics();}catch(e){}
+    try{if(typeof window.ephRefreshAgreementStats==='function')window.ephRefreshAgreementStats();}catch(e){}
+    return result;
+  };
+})();
+</script>
 
 <style id="eph-customer-listing-actions-click-fix">
 #ephPublicDetail, #ephPublicDetail .modal, #ephPublicDetail .modal-content, #ephPublicDetail .eph-list-actions { pointer-events:auto!important; }
@@ -3248,113 +3316,6 @@ function ephCommissionDashboardStats(){
   setTimeout(()=>{try{window.render()}catch(e){}},0);
 })();
 </script>
-
-<script id="eph-export-and-agent-display-repair-20261018">
-(function(){
- 'use strict';
- const txt=v=>v==null?'':String(v).replace(/<[^>]*>/g,'').replace(/&nbsp;/gi,' ').trim();
- const first=(o,keys)=>{for(const k of keys){if(o&&o[k]!=null&&txt(o[k])!=='')return o[k]}return ''};
- const safeCode=(a,type)=>{
-   const existing=txt(first(a,['displayCode','display_code','agentCode','agent_code','customerCode','customer_code'])).toUpperCase();
-   if(type==='agent'){
-     if(/^(AB|AGBK)\d+$/.test(existing))return existing;
-     const id=txt(a&&a.id).toUpperCase(); if(/^(AB|AGBK)\d+$/.test(id))return id;
-     const src=txt(first(a,['source','formSource','form_source'])).toLowerCase();
-     // Never expose a Supabase primary key as a user-facing code.
-     return src.includes('manual')?'':' ';
-   }
-   const code=txt(first(a,['displayCode','display_code','customerCode','customer_code','_eph_customer_id'])).toUpperCase();
-   if(/^(BYR|TNT|CB|CT|CST)\d+$/.test(code))return code;
-   const id=txt(a&&a.id).toUpperCase(); return /^(BYR|TNT|CB|CT|CST)\d+$/.test(id)?id:'';
- };
- function dateStamp(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
- function leadRows(){
-   const source=typeof leads!=='undefined'&&Array.isArray(leads)?leads:[];
-   return source.filter(l=>l&&[l.name,l.phone,l.email].some(v=>txt(v))).map(l=>({
-    'Customer ID':safeCode(l,'lead')||txt(l.id),
-    'Full Name':txt(first(l,['name','fullName','full_name','Full Name'])),
-    'Type':txt(first(l,['type','role','lead_type','customer_type','customerType'])),
-    'Country Code':txt(first(l,['countryCode','country_code','countryCodeRaw'])),
-    'Phone / WhatsApp':txt(first(l,['phone','mobile','whatsapp','whatsappPhone','contactNumber'])),
-    'Email':txt(first(l,['email','emailAddress','email_address'])),
-    'Requirement':txt(first(l,['requirement','requirementType','requirement_type','specialty'])),
-    'Location':txt(first(l,['location','preferredLocation','preferred_location','area'])),
-    'Budget':txt(first(l,['budget','budgetRange','budget_range'])),
-    'Listing Reference':txt(first(l,['listingRef','listingReference','listing_reference'])),
-    'Owner Side':txt(first(l,['ownerSide','owner_side'])),
-    'Status':txt(first(l,['status'])), 'Source':txt(first(l,['source'])),
-    'Created Date':txt(first(l,['created_at','createdAt','createdDate','created_date'])),
-    'Next Follow Up':txt(first(l,['nextFollowUpDate','next_follow_up','nextFollowUp'])),
-    'Updated':txt(first(l,['updated','updated_at','updatedAt','updatedDate'])),
-    'Commission Amount':txt(first(l,['commissionAmount','commission_amount','commission'])),
-    'Commission Received':txt(first(l,['commissionReceived','commission_received','received'])),
-    'Referral Fee':txt(first(l,['referralFee','referral_fee'])),
-    'Remark':txt(first(l,['remark','remarks','notes']))
-   }));
- }
- function agentRows(){
-   const source=typeof agents!=='undefined'&&Array.isArray(agents)?agents:[];
-   return source.filter(a=>a&&[a.name,a.phone,a.email,a.company,a.agency].some(v=>txt(v))).map(a=>{
-     const raw=txt(first(a,['displayCode','display_code','agentCode','agent_code','id'])).toUpperCase();
-     let code=safeCode(a,'agent');
-     // If old records only have an internal DB id, infer the display prefix from source,
-     // but do not invent a sequential number or alter the stored record.
-     if(!code.trim() && /^(AB|AGBK)\d+$/.test(raw))code=raw;
-     return {
-      'Agent ID':code.trim(), 'Agent / Broker Name':txt(first(a,['name','agentName','agent_name','full_name'])),
-      'Agency / Company':txt(first(a,['company','agency','agencyName','agency_name'])),
-      'Country Code':txt(first(a,['countryCode','country_code','agentCountryCode'])),
-      'Phone / WhatsApp':txt(first(a,['phone','mobile','agentPhone','agent_phone','whatsapp'])),
-      'Email':txt(first(a,['email','agentEmail','agent_email'])),
-      'Requirement / Specialty':txt(first(a,['specialty','requirement','requirementType','requirement_type','propertyType'])),
-      'Owner Side':txt(first(a,['ownerSide','owner_side'])), 'Requirements':txt(first(a,['requirements','requirementCount','requirement_count'])),
-      'Status':txt(first(a,['status'])), 'Source':txt(first(a,['source','formSource'])),
-      'Created Date':txt(first(a,['created_at','createdAt','createdDate'])),
-      'Next Follow Up':txt(first(a,['nextFollowUpDate','next_follow_up','nextFollowUp'])),
-      'Updated':txt(first(a,['updated','updated_at','updatedAt'])),
-      'Commission Amount':txt(first(a,['commissionAmount','commission_amount','commission'])),
-      'Commission Received':txt(first(a,['commissionReceived','commission_received','received'])),
-      'Referral Fee':txt(first(a,['referralFee','referral_fee'])), 'Remark':txt(first(a,['remark','remarks','notes']))
-     };
-   });
- }
- function sheet(rows,label){if(!window.XLSX)throw new Error('Excel component did not load. Refresh the CRM page and try again.');if(!rows.length)return XLSX.utils.aoa_to_sheet([[label+' — no matching records']]);const ws=XLSX.utils.json_to_sheet(rows);ws['!cols']=Object.keys(rows[0]).map(k=>({wch:Math.min(42,Math.max(14,k.length+3))}));return ws;}
- function download(rows,name,label){const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,sheet(rows,label),label.slice(0,31));XLSX.writeFile(wb,name);if(typeof toast==='function')toast('Excel exported: '+rows.length+' records');}
- window.ephExportCRMExcel=async function(type){
-   try{
-    if(!window.XLSX)throw new Error('Excel component did not load. Refresh the CRM page and try again.');
-    // Reload authoritative CRM data before exporting so stale/empty arrays are not exported.
-    if(typeof loadCRMData==='function') await loadCRMData();
-    const stamp=dateStamp();
-    if(type==='leads'){const rows=leadRows();download(rows,'Evelyn_CRM_Customer_Leads_'+stamp+'.xlsx','Customer Leads');return;}
-    if(type==='agents'){const rows=agentRows();download(rows,'Evelyn_CRM_Agent_Database_'+stamp+'.xlsx','Agent Database');return;}
-    if(type==='all'){
-      const wb=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb,sheet(leadRows(),'Customer Leads'),'Customer Leads');
-      XLSX.utils.book_append_sheet(wb,sheet(agentRows(),'Agent Database'),'Agent Database');
-      XLSX.writeFile(wb,'Evelyn_Property_Hub_CRM_Export_'+stamp+'.xlsx');
-      if(typeof toast==='function')toast('CRM Excel exported');return;
-    }
-    if(type==='owners'||type==='properties'){
-      if(typeof toast==='function')toast('This export type uses the existing export handler.');return;
-    }
-   }catch(e){console.error('CRM export failed',e);if(typeof toast==='function')toast('Export failed: '+(e&&e.message||e),true);else alert('Export failed: '+(e&&e.message||e));}
- };
- window.ephExportAgentExcel=()=>window.ephExportCRMExcel('agents');
- console.log('EPH export repair installed: reload-before-export; stable display-code fields.');
-})();
-</script>
-
-
-<style id="eph-ios-android-targeted-repair-20261019">
-html,body{width:100%;max-width:100%;-webkit-text-size-adjust:100%;}
-button,a,[role="button"],input,select,textarea{touch-action:manipulation;}
-button,a,[role="button"]{-webkit-tap-highlight-color:rgba(215,168,75,.22);}
-button:not(:disabled),a,[role="button"]{cursor:pointer;}
-.eph-photo-strip img{display:block;max-width:100%;}
-.eph-photo-failed img{opacity:.25;}
-@media(max-width:680px){.topbar{z-index:11;} .mobile-nav{z-index:30;} .modal-backdrop.show{z-index:1000;} .public-header{z-index:20;} .public-header button,.public-nav a{position:relative;z-index:21;} .content{padding-bottom:calc(100px + env(safe-area-inset-bottom));} .mobile-nav button{min-height:44px;position:relative;z-index:31;pointer-events:auto;} .modal-backdrop.show .modal{pointer-events:auto;max-width:100%;}}
-</style>
 </body></html>
 
 <script id="eph-customer-leads-dedupe-display-20261016">
@@ -3568,10 +3529,17 @@ button:not(:disabled),a,[role="button"]{cursor:pointer;}
      const explicitId=T(val(row,['linkedAgreementId','agreementId','latestAgreementId','leaseId','contractId']));
      const customer=T(val(row,['displayCode','customerCode','customer_code','customer_id','_eph_customer_id','agentCode','agentId']));
      const ph=phoneKey(val(row,['phone','mobile','whatsapp','whatsappPhone']));
-     const nm=norm(val(row,['name','fullName','person','customerName','agent_name','agentName']));
+     const personName=norm(val(row,['name','fullName','person','customerName','agent_name','agentName','customer_name']));
      const ref=norm(val(row,['ref','reference','listingRef','propertyRef','listing_reference']));
-     const prop=norm(val(row,['property','propertyName','property_name']));
-     const key=explicitId?'agreement:'+norm(explicitId):customer?'customer:'+norm(customer)+'|'+type:ph?'phone:'+ph+'|'+type:(nm+'|'+ref+'|'+prop+'|'+type+'|'+source);
+     const prop=norm(val(row,['property','propertyName','property_name','property_name']));
+     const docDate=T(val(row,['documentDate','agreementDate','agreement_date','date','signingDate','signatureDate','contractStartDate'])).slice(0,10);
+     // Cross-source deduplication must not treat AB001 and AGBK003 as different agreements
+     // when they refer to the same person, document type, date and property.
+     const personKey=ph?'phone:'+ph:personName?'name:'+personName:customer?'customer:'+norm(customer):'source:'+source+':'+norm(T(row.id||row._dbid));
+     // Deduplicate across central tracker, Customer Leads and Agent Database even
+     // when each source has a different row/document ID. IDs remain available for
+     // explicit-link suppression above, but are not the cross-source identity key.
+     const key=personKey+'|'+type+'|date:'+(docDate||'undated')+'|property:'+(prop||ref||'unspecified');
      return {_raw:row,_source:source,_type:type,_status:status,_key:key,_lastUpdated:row.updated_at||row.updated||row.updatedAt||row.lastUpdated||row.last_updated||'',_lastStamp:lastStamp(row)};
    };
    function add(item){
@@ -3581,13 +3549,25 @@ button:not(:disabled),a,[role="button"]{cursor:pointer;}
      if(old){
        if(item._lastStamp>old._lastStamp){old._lastUpdated=item._lastUpdated;old._lastStamp=item._lastStamp;}
        old._sources=(old._sources||[]).concat(item._source);
-       old._raw={...old._raw,...item._raw};
+       // Keep the saved Agreement Tracker record's status/type as canonical when present.
+       if(old._source!=='central' && item._source==='central'){
+         old._raw={...item._raw,...old._raw};
+         old._source='central';
+         old._status=item._status;
+         old._type=item._type;
+       } else {
+         old._raw={...old._raw,...item._raw};
+       }
        return;
      }
      byKey.set(item._key,item);all.push(item);
    }
    central.forEach(r=>add(merge(r,'central',kindOf(r))));
-   leadList.forEach(l=>{const type=kindOf(l);if(type)add(merge(l,'lead',type));});
+   // Do not count every Buyer/Tenant lead as an agreement. A lead is included
+   // only when it contains agreement-specific fields; otherwise deleting a tracker
+   // document could leave the headline total unchanged because the ordinary lead
+   // was being reinterpreted as a SPA/Tenancy agreement.
+   leadList.forEach(l=>{const type=kindOf(l);if(type&&agreementEvidence(l))add(merge(l,'lead',type));});
    agentList.forEach(a=>{
      let linked=null;
      const ids=['linkedCustomerId','customerId','customer_id','customerCode','customer_code','_eph_customer_id','linkedLeadId','leadId'];
@@ -3659,7 +3639,15 @@ button:not(:disabled),a,[role="button"]{cursor:pointer;}
    toast('Could not match this agreement to a loaded Customer Lead or Agent. No data was changed. Check the customer code, phone number, or name on the record.',true);
  };
  function tracker(){
-   const all=sourceRows();
+   let all=sourceRows();
+   // If an old AGBK agreement duplicates a manual AB agreement for the same person,
+   // same document type and same document date, show the AB record only. Keep other
+   // agreements (different type/date) untouched.
+   const trackerName=r=>norm(val(r,['person','name','fullName','customerName','agentName','agent_name']));
+   const trackerDate=r=>String(val(r,['date','documentDate','signingDate','signatureDate','contractStartDate'])||'').slice(0,10);
+   const trackerCode=r=>String(val(r,['agentCode','agent_code','linkedAgentId','agentId','agentRef','ref'])||String(val(r,['id','displayCode'])||'').match(/AGBK\d+|AB\d+/i)?.[0]||'').toUpperCase();
+   const manualAgreementKeys=new Set(all.filter(r=>/^AB\d+$/.test(trackerCode(r))).map(r=>trackerName(r)+'|'+String(r._agreementType||'')+'|'+trackerDate(r)));
+   all=all.filter(r=>!(/^AGBK\d+$/.test(trackerCode(r))&&manualAgreementKeys.has(trackerName(r)+'|'+String(r._agreementType||'')+'|'+trackerDate(r))));
    const th=`<tr><th>Document ID</th><th>Customer / ID</th><th>Property</th><th>Linked Agent / ID</th><th>Document</th><th>Status</th><th>Document Date</th><th>Lease End / Reminder</th><th>Last Updated (MYT)</th><th>File</th><th>Action</th></tr>`;
    const perPage=5;
    if(!all.length)return `<section class="panel"><div class="panel-head"><div><h3>Agreement Tracker</h3><p>5 records per page. Use page buttons or jump to any page.</p></div><span class="pill gold">0 records</span></div><div class="table-wrap"><table><thead>${th}</thead><tbody><tr><td colspan="11" class="empty">No documents found.</td></tr></tbody></table></div><div class="toolbar eph-agreement-pager" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 0"><span class="muted">Showing 0–0 of 0</span><button class="btn small" disabled>← Previous</button><span class="pill">Page 1 / 1</span><button class="btn small" disabled>Next →</button></div></section>`;
@@ -4041,53 +4029,37 @@ button:not(:disabled),a,[role="button"]{cursor:pointer;}
 })();
 </script>
 
-
-<script id="eph-final-real-data-export-and-agent-code-repair-20261018">
+<script id="eph-load-existing-central-agreement-tracker-table">
 (function(){
  'use strict';
- const S=v=>v==null?'':String(v).replace(/<[^>]*>/g,'').replace(/&nbsp;/gi,' ').trim();
- const obj=v=>{if(v&&typeof v==='object'&&!Array.isArray(v))return v;if(typeof v==='string'){try{const x=JSON.parse(v);return x&&typeof x==='object'?x:{}}catch(e){}}return {}};
- const first=(objs,keys)=>{for(const o of objs){if(!o||typeof o!=='object')continue;for(const k of keys){if(o[k]!=null&&S(o[k])!=='')return o[k]}}return ''};
- const normCode=(v,prefixes)=>{const c=S(v).toUpperCase();return prefixes.some(p=>new RegExp('^'+p+'\\d+$').test(c))?c:''};
- const phoneKey=v=>S(v).replace(/\D/g,'').replace(/^0060/,'60');
- function answersFor(a){const d=obj(a&&a.data);const nested=obj(d.answers);const fa=obj(a&&a.formAnswers);return [a||{},d,nested,fa,obj(fa.answers)];}
- function roleOf(a){const os=answersFor(a);const c=S(first(os,['displayCode','display_code','customerCode','customer_code','id','Customer ID'])).toUpperCase();const r=S(first(os,['type','role','formRole','customerType','customer_type','lead_type','Which best describes you?','Which best describes you? / 您的身份是？']));if(/^TNT\d+$|^CT\d+$/.test(c)||/tenant|renter|租客|租房/i.test(r))return 'Tenant';return 'Buyer';}
- function leadExportRows(){
-   const src=Array.isArray(leads)?leads:[];
-   return src.map(l=>{const os=answersFor(l);const code=normCode(first(os,['displayCode','display_code','customerCode','customer_code','_eph_customer_id','id','Customer ID']),['BYR','TNT','CB','CT','CST']);
-    return {'Customer ID':code||S(first(os,['customerCode','customer_code','displayCode','display_code','id','_dbid'])), 'Full Name':S(first(os,['name','fullName','full_name','Full Name','Full Name / 姓名','Tenant Name','Buyer Name'])), 'Type':roleOf(l), 'Country Code':S(first(os,['countryCode','country_code','Country Code','Country Code (WhatsApp / Phone)','Country Code / 国际区号'])), 'Phone / WhatsApp':S(first(os,['phone','mobile','whatsapp','whatsappPhone','contactNumber','Phone / WhatsApp / 电话','Phone / WhatsApp Number','WhatsApp / Phone Number'])), 'Email':S(first(os,['email','emailAddress','email_address','Email Address','Email Address / 电邮'])), 'Requirement':S(first(os,['requirement','requirementType','requirement_type','specialty','Requirement Type','Client Requirement Type / 客户需求类别','Property Type'])), 'Location':S(first(os,['location','preferredLocation','preferred_location','area','Preferred Area / Location','Preferred State'])), 'Budget':S(first(os,['budget','budgetRange','budget_range','Budget (RM)','Client Budget (RM)'])), 'Listing Reference':S(first(os,['listingRef','listingReference','listing_reference','Listing Reference Number'])), 'Status':S(first(os,['status','leadStatus','lead_status','Status'])), 'Source':S(first(os,['source','formSource','Source'])), 'Created Date':S(first(os,['created_at','createdAt','createdDate','created_date','Timestamp'])), 'Next Follow Up':S(first(os,['nextFollowUpDate','next_follow_up','nextFollowUp','Next Follow Up'])), 'Updated':S(first(os,['updated','updated_at','updatedAt','updatedDate'])), 'Commission Amount':S(first(os,['commissionAmount','commission_amount','commission'])), 'Commission Received':S(first(os,['commissionReceived','commission_received','received'])), 'Referral Fee':S(first(os,['referralFee','referral_fee'])), 'Remark':S(first(os,['remark','remarks','notes','Other Requirements']))};
-   }).filter(r=>Object.entries(r).some(([k,v])=>k!=='Customer ID'&&k!=='Type'&&S(v)));
- }
- function agentExportRows(){
-   const src=Array.isArray(agents)?agents:[];
-   const used=new Set();let manualMax=0,formMax=0;
-   src.forEach(a=>{const os=answersFor(a);const c=S(first(os,['displayCode','display_code','agentCode','agent_code','customerCode','customer_code','id','Agent ID'])).toUpperCase();if(/^AB\d+$/.test(c)){used.add(c);manualMax=Math.max(manualMax,Number(c.slice(2))||0)}if(/^AGBK\d+$/.test(c)){used.add(c);formMax=Math.max(formMax,Number(c.slice(4))||0)}});
-   return src.filter(a=>{const os=answersFor(a);return !!S(first(os,['name','agentName','agent_name','Agent / Broker Name','Full Name','phone','mobile','email','Email Address','company','agency']))}).map(a=>{
-     const os=answersFor(a);let code=S(first(os,['displayCode','display_code','agentCode','agent_code','crm_agent_code','customerCode','customer_code','Agent ID'])).toUpperCase();
-     if(!/^AB\d+$|^AGBK\d+$/.test(code)){const source=S(first(os,['source','formSource','form_source','Source'])).toLowerCase();const isForm=/google|form|cobroke|co-broke|agent_form/.test(source)||!!first(os,['googleFormRequestId','google_form_request_id','_sourceRequestId']);const prefix=isForm?'AGBK':'AB';let n=isForm?++formMax:++manualMax;code=prefix+String(n).padStart(3,'0');while(used.has(code)){n++;code=prefix+String(n).padStart(3,'0')}used.add(code);}
-     return {'Agent ID':code,'Agent / Broker Name':S(first(os,['name','agentName','agent_name','full_name','Agent / Broker Name','Agent/Broker Name','Full Name','Full Name / 姓名'])), 'Agency / Company':S(first(os,['company','agency','agencyName','agency_name','Agency / Company','Agency / Company / 中介公司'])), 'Country Code':S(first(os,['countryCode','country_code','agentCountryCode','Country Code (Phone / WhatsApp)','Country Code (WhatsApp / Phone)'])), 'Phone / WhatsApp':S(first(os,['phone','mobile','agentPhone','agent_phone','whatsapp','Agent WhatsApp / Phone Number','WhatsApp / Phone Number','Phone Number'])), 'Email':S(first(os,['email','agentEmail','agent_email','Email Address','Email Address / 电邮地址'])), 'Requirement / Specialty':S(first(os,['specialty','requirement','requirementType','requirement_type','propertyType','Requirement Type','Client Requirement Type / 客户需求类别'])), 'Requirements / Details':S(first(os,['requirements','requirementCount','requirement_count','client_requirement','detail','remark','remarks','Other Requirements'])), 'Owner Side':S(first(os,['ownerSide','owner_side','Owner Side'])), 'Status':S(first(os,['status','Status'])), 'Source':S(first(os,['source','formSource','form_source','Source'])), 'Created Date':S(first(os,['created_at','createdAt','createdDate','created_date','Timestamp'])), 'Next Follow Up':S(first(os,['nextFollowUpDate','next_follow_up','nextFollowUp'])), 'Updated':S(first(os,['updated','updated_at','updatedAt','updatedDate'])), 'Commission Amount':S(first(os,['commissionAmount','commission_amount','commission'])), 'Commission Received':S(first(os,['commissionReceived','commission_received','received'])), 'Referral Fee':S(first(os,['referralFee','referral_fee'])), 'Remark':S(first(os,['remark','remarks','notes','commissionRemark','commission_remark']))};
-   });
- }
- function sheet(rows,label){if(!window.XLSX)throw new Error('Excel library did not load. Refresh the CRM page.');const ws=rows.length?XLSX.utils.json_to_sheet(rows):XLSX.utils.aoa_to_sheet([[label+' — no matching records']]);if(rows.length)ws['!cols']=Object.keys(rows[0]).map(k=>({wch:Math.min(45,Math.max(14,k.length+3))}));return ws;}
- function download(sheets,file){const wb=XLSX.utils.book_new();Object.entries(sheets).forEach(([n,r])=>XLSX.utils.book_append_sheet(wb,sheet(r,n),n.slice(0,31)));XLSX.writeFile(wb,file);if(typeof toast==='function')toast('Excel exported successfully. Customer Leads: '+(sheets['Customer Leads']||[]).length+' · Agents: '+(sheets['Agent Database']||[]).length);}
- const stamp=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kuala_Lumpur',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
- window.ephExportCRMExcel=async function(type){
+ const priorLoad=loadCRMData;
+ loadCRMData=async function(){
+   await priorLoad();
    try{
-     if(!window.XLSX)throw new Error('Excel library did not load. Refresh the CRM page.');
-     if(typeof window.loadCRMData==='function')await window.loadCRMData();
-     // Do not export a stale closure or a filtered table; export the freshly loaded full CRM arrays.
-     const lr=leadExportRows(), ar=agentExportRows(), d=stamp();
-     if(type==='leads')return download({'Customer Leads':lr},'Evelyn_CRM_Customer_Leads_'+d+'.xlsx');
-     if(type==='agents')return download({'Agent Database':ar},'Evelyn_CRM_Agent_Database_'+d+'.xlsx');
-     if(type==='all')return download({'Customer Leads':lr,'Agent Database':ar},'Evelyn_Property_Hub_CRM_Export_'+d+'.xlsx');
-     if(type==='properties'&&typeof listings!=='undefined'){const rows=listings||[];const mapped=rows.map(l=>({'Listing Reference':S(l.reference_number||l.id||l.listingRef),'Property Type':S(l.type||l.category),'Name':S(l.name||l.title),'State':S(l.state),'Area':S(l.area||l.location),'Size':S(l.size||l.size_sqft),'Title':S(l.title),'Asking Price / Rental':S(l.asking_price_rental||l.askingPriceRental||l.price||l.rental),'Status':S(l.status),'Source':S(l.source),'Photo Folder':S(l.photo_folder||l.photoFolder)}));const sheets={};['Land','Commercial','Factory','House'].forEach(c=>sheets[c]=mapped.filter(r=>r['Property Type'].toLowerCase()===c.toLowerCase()));return download(sheets,'Evelyn_CRM_Property_Listings_'+d+'.xlsx');}
-   }catch(e){console.error('EPH export failed',e);if(typeof toast==='function')toast('Export failed: '+(e.message||e),true);else alert('Export failed: '+(e.message||e));}
+     const q=await ephRequest('/rest/v1/crm_agreement_tracker?select=id,source_record_id,source_kind,agent_code,agent_name,customer_id,customer_name,agreement_type,agreement_status,agreement_date,expiry_date,file_name,file_url,created_at,updated_at&order=updated_at.desc&limit=5000');
+     const rows=Array.isArray(q.data)?q.data:[];
+     const mapped=rows.map(r=>({
+       id:'AGT-TABLE-'+String(r.id), _centralAgreementTableId:r.id,
+       source_record_id:r.source_record_id||'', source_kind:r.source_kind||'',
+       ref:r.agent_code||r.customer_id||'', person:r.agent_name||r.customer_name||'',
+       agentCode:r.agent_code||'', agentName:r.agent_name||'',
+       kind:r.agreement_type||'SPA', kindLabel:r.agreement_type||'SPA',
+       status:r.agreement_status||'Other / Blank', date:r.agreement_date||'',
+       leaseEnd:r.expiry_date||'', documentName:r.file_name||'', documentUrl:r.file_url||'',
+       created_at:r.created_at||'', updated_at:r.updated_at||'',
+       agentProfileTracker:String(r.source_kind||'').toLowerCase()==='agent'
+     }));
+     const current=Array.isArray(leases)?leases:[];
+     const byCentralId=new Map(current.filter(x=>x._centralAgreementTableId!=null).map(x=>[String(x._centralAgreementTableId),x]));
+     const currentByKey=new Map(current.map(x=>[String(x.id||''),x]));
+     const merged=[];
+     for(const row of mapped){
+       const existing=byCentralId.get(String(row._centralAgreementTableId));
+       merged.push(existing?{...existing,...row}:row);
+     }
+     const mappedIds=new Set(mapped.map(x=>String(x._centralAgreementTableId)));
+     leases=[...merged,...current.filter(x=>x._centralAgreementTableId==null)];
+   }catch(e){console.warn('Existing crm_agreement_tracker table could not be loaded; CRM records remain available.',e&&e.message||e);}
  };
- window.ephExportAgentExcel=()=>window.ephExportCRMExcel('agents');
- // Rewire every export button after the CRM's older repeated render/export patches.
- function wire(){document.querySelectorAll('[data-eph-export="leads"]').forEach(b=>b.onclick=()=>window.ephExportCRMExcel('leads'));document.querySelectorAll('[data-eph-export="agents"]').forEach(b=>b.onclick=()=>window.ephExportCRMExcel('agents'));document.querySelectorAll('[data-eph-export="all"]').forEach(b=>b.onclick=()=>window.ephExportCRMExcel('all'));}
- const oldRender=window.render;if(typeof oldRender==='function')window.render=function(){const r=oldRender.apply(this,arguments);setTimeout(wire,0);return r};
- setTimeout(wire,100);setTimeout(wire,600);setTimeout(wire,1500);
- console.log('EPH final export handler installed');
 })();
 </script>
