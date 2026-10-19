@@ -215,12 +215,31 @@ document.addEventListener('DOMContentLoaded',()=>{showCustomer();loadPublicListi
 const EPH_KIND_TABLE='crm_records';
 const EPH_KIND_MAP={agent:'agent',viewing:'viewing',commission:'commission',lease:'lease'};
 async function ephRequest(path,opts={}){
- const session=window.EPH_ADMIN_SESSION;
- const headers={apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+(session?.access_token||EPH_SUPABASE_KEY),...(opts.body?{'Content-Type':'application/json'}:{}),...(opts.headers||{})};
- const r=await fetch(EPH_SUPABASE_URL+path,{...opts,headers});
- const txt=await r.text();let data=null;try{data=txt?JSON.parse(txt):null}catch{}
- if(!r.ok)throw new Error(data?.message||data?.hint||data?.details||txt||('HTTP '+r.status));
- return {data,headers:r.headers};
+ // Always require the real Supabase Auth session for private CRM writes. If a JWT has expired,
+ // refresh it once and retry the same request; never fall back to the public anon key for a write.
+ let session=window.EPH_ADMIN_SESSION;
+ const isWrite=!!opts.method&& !['GET','HEAD','OPTIONS'].includes(String(opts.method).toUpperCase());
+ if(isWrite&&!session?.access_token)throw new Error('Admin session is missing. Sign out, then sign in again before saving this agreement.');
+ const send=async()=>{
+  session=window.EPH_ADMIN_SESSION;
+  const headers={apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+(session?.access_token||EPH_SUPABASE_KEY),...(opts.body?{'Content-Type':'application/json'}:{}),...(opts.headers||{})};
+  const r=await fetch(EPH_SUPABASE_URL+path,{...opts,headers});
+  const txt=await r.text();let data=null;try{data=txt?JSON.parse(txt):null}catch{}
+  return {r,txt,data};
+ };
+ let result=await send();
+ if((result.r.status===401||result.r.status===403)&&session?.refresh_token){
+  // Refresh only with the user's existing refresh token; no service-role or policy bypass.
+  const rr=await fetch(EPH_SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{'Content-Type':'application/json','apikey':EPH_SUPABASE_KEY},body:JSON.stringify({refresh_token:session.refresh_token})});
+  const rt=await rr.text();let rd=null;try{rd=rt?JSON.parse(rt):null}catch{}
+  if(rr.ok&&rd?.access_token){window.EPH_ADMIN_SESSION={...session,access_token:rd.access_token,refresh_token:rd.refresh_token||session.refresh_token,user:rd.user||session.user};result=await send();}
+ }
+ if(!result.r.ok){
+  const msg=result.data?.message||result.data?.hint||result.data?.details||result.txt||('HTTP '+result.r.status);
+  if(result.r.status===401||result.r.status===403)throw new Error(msg+' (Supabase rejected this request. If this is an RLS error, sign in with the authorized admin account and confirm the table policy applies to authenticated.)');
+  throw new Error(msg);
+ }
+ return {data:result.data,headers:result.r.headers};
 }
 function ephRequireAdmin(){if(!window.EPH_ADMIN_SESSION?.access_token)throw new Error('Please sign in to Admin before saving.');}
 function ephNewDbRecordId(kind='record'){/* crm_records.id is a bigint without a default; return a unique numeric string so Postgres can cast it safely. */return String(Date.now()*1000+Math.floor(Math.random()*1000));}
@@ -1622,10 +1641,10 @@ commissionPage=function(){
       {key:'updatedDisplay',label:'Last Updated (MYT)',value:myt(d.updated_at||d.updated||d.created_at),readonly:true}
     ];
     showModal('View / Edit '+txt(d.id),fields,async values=>{try{
-      ephRequireAdmin();const now=new Date().toISOString();const clean={...Object.fromEntries(Object.entries(d).filter(([k])=>!k.startsWith('_'))),...values,updated_at:now};delete clean.updatedDisplay;delete clean.documentFile;
+      ephRequireAdmin();const now=new Date().toISOString();const clean={...Object.fromEntries(Object.entries(d).filter(([k])=>!k.startsWith('_'))),...values,updated_at:now};if(d._centralAgreementTableId!=null)clean._centralAgreementTableId=d._centralAgreementTableId;delete clean.updatedDisplay;delete clean.documentFile;
       const file=document.getElementById('f_documentFile')?.files?.[0];if(file){if(file.size>4*1024*1024)throw new Error('Please keep the document under 4 MB for safe JSON storage.');clean.documentName=file.name;clean.documentData=await new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=()=>resolve(String(fr.result));fr.onerror=()=>reject(new Error('Could not read document file.'));fr.readAsDataURL(file);});}
       const linkedLead=(leads||[]).find(l=>String(l.displayCode||l.id||'')===String(values.ref||'')||String(l.id||'')===String(values.ref||''));if(linkedLead){clean.ref=String(linkedLead.displayCode||linkedLead.id||'');clean.customerDbId=String(linkedLead._dbid||linkedLead.id||'');clean.person=linkedLead.name||clean.person||'';clean.customerType=linkedLead.type||'';clean.customerPhone=linkedLead.phone||'';}const selectedCode=txt(values.agentRef);const agent=(agents||[]).find(a=>txt(a.displayCode||a.id)===selectedCode||txt(a._dbid)===selectedCode);if(agent){clean.agentRef=txt(agent.displayCode||agent.id);clean.agentDbId=String(agent._dbid||agent.id||'');clean.agentName=agent.name||'';clean.agentPhone=agent.phone||'';clean.agentAgency=agent.company||'';}
-      await ephSaveKind('lease',clean,d._dbid);await ephSyncAgreementToLinkedRecords(clean);closeModal();await loadCRMData();toast('SPA / Tenancy updated; linked Customer Lead / Agent records refreshed.');
+      if(d._centralAgreementTableId==null)await ephSaveKind('lease',clean,d._dbid);await ephSyncAgreementToLinkedRecords(clean);closeModal();await loadCRMData();toast('SPA / Tenancy updated; linked Customer Lead / Agent records refreshed.');
     }catch(e){toast('Agreement update failed: '+e.message,true);}});
   };
 
@@ -1644,6 +1663,20 @@ commissionPage=function(){
       const base=Object.fromEntries(Object.entries(agent).filter(([k])=>!k.startsWith('_')));
       const q=await ephRequest('/rest/v1/crm_records?id=eq.'+encodeURIComponent(String(agent._dbid)),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({data:{...base,...agreementFields,latestAgreementKind:agreementFields.contractKind,latestAgreementStatus:agreementFields.contractStatus,latestAgreementId:data.id||''},updated_at:now})});
       if(!Array.isArray(q.data)||!q.data.length)throw new Error('Agreement saved, but linked Agent Database update was not confirmed. Check crm_records UPDATE policy.');
+    }
+    // Keep the central Supabase tracker table in sync as well as crm_records.
+    // Existing central rows are PATCHed by their actual table ID; new agreements are inserted once.
+    try{
+      const centralId=data._centralAgreementTableId ?? String(data.id||'').match(/^AGT-TABLE-(.+)$/)?.[1];
+      const body={source_record_id:String(data.id||''),source_kind:'central',agent_code:agentCode||null,agent_name:data.agentName||agent?.name||null,customer_id:code||null,customer_name:data.person||lead?.name||null,agreement_type:data.kind||data.kindLabel||'SPA',agreement_status:data.status||'Other / Blank',agreement_date:data.signingDate||data.date||data.leaseStart||null,expiry_date:data.leaseEnd||null,file_name:data.documentName||null,file_url:data.documentUrl||null,updated_at:now};
+      let centralResult;
+      if(centralId!=null){centralResult=await ephRequest('/rest/v1/crm_agreement_tracker?id=eq.'+encodeURIComponent(String(centralId)),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify(body)});}
+      else{centralResult=await ephRequest('/rest/v1/crm_agreement_tracker',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({...body,created_at:data.created_at||now})});}
+      if(!Array.isArray(centralResult.data)||!centralResult.data.length)throw new Error('Supabase did not confirm crm_agreement_tracker sync.');
+      data._centralAgreementTableId=centralResult.data[0].id;
+    }catch(centralError){
+      console.error('Central SPA/Tenancy tracker sync failed:',centralError);
+      throw new Error('Agreement details were saved, but central crm_agreement_tracker sync failed: '+(centralError.message||centralError)+'. Please sign in again if your session may have expired; the app will refresh an expired Supabase session once automatically.');
     }
   }
 
@@ -1690,9 +1723,12 @@ commissionPage=function(){
         const valid=/^AGBK\d+$/.test(code)?code:'';
         const existing=(agents||[]).find(a=>phoneKey(a.phone)===key);
         if(existing){
-          // Google Form's Agent/Broker code wins for display, while the existing DB identity is preserved.
-          if(valid)existing.displayCode=valid;
-          existing.source=existing.source||'Google Form';
+          // A phone match must never replace a permanent manual AB identity with a Google Form AGBK code.
+          // Google Form codes may be applied only to a record already known to be Google Form-sourced.
+          const existingCode=String(existing.displayCode||existing.id||'').trim().toUpperCase();
+          const existingIsManual=/^AB\d+$/.test(existingCode) || /manual/i.test(String(existing.source||''));
+          if(valid && !existingIsManual) existing.displayCode=valid;
+          if(!existingIsManual) existing.source=existing.source||'Google Form';
           existing.name=existing.name||row.agent_name||row.agentName||row.name||row['Agent / Broker Name']||row['Full Name']||'';
           existing.company=existing.company||row.agency||row.company||row['Agency / Company']||'';
           existing.phone=existing.phone||String(phone);
@@ -2156,7 +2192,10 @@ commissionPage=function(){
         const key=phoneKey(candidate.phone), candidateCode=txt(candidate.displayCode||candidate.id).toUpperCase();
         let found=(window.agents||[]).find(a=>(key&&phoneKey(a.phone)===key)||(candidateCode&&/^(AGBK|AB)\d+$/.test(candidateCode)&&txt(a.displayCode||a.id).toUpperCase()===candidateCode));
         if(found){
-          const enriched=normalizeAgent({...found,...Object.fromEntries(['name','company','phone','email','specialty','requirementType','requirements','status','updated_at'].map(k=>[k,txt(found[k])?found[k]:candidate[k]])),displayCode:/^(AGBK|AB)\d+$/.test(candidateCode)?candidateCode:found.displayCode||found.id,source:found.source||candidate.source,_dbid:found._dbid||row.id,_sourceTable:found._sourceTable||sourceTable});
+          const foundCode=txt(found.displayCode||found.id).toUpperCase();
+          const foundIsManual=/^AB\d+$/.test(foundCode) || /manual/i.test(txt(found.source));
+          const mergedCode=foundIsManual?foundCode:(/^(AGBK|AB)\d+$/.test(candidateCode)?candidateCode:(found.displayCode||found.id));
+          const enriched=normalizeAgent({...found,...Object.fromEntries(['name','company','phone','email','specialty','requirementType','requirements','status','updated_at'].map(k=>[k,txt(found[k])?found[k]:candidate[k]])),id:mergedCode,displayCode:mergedCode,source:foundIsManual?'Manual':(found.source||candidate.source),_dbid:found._dbid||row.id,_sourceTable:found._sourceTable||sourceTable});
           Object.assign(found,enriched);
         }else if(candidate.name||candidate.phone||candidate.email||/^(AGBK|AB)\d+$/.test(candidateCode)){
           candidate.id=/^(AGBK|AB)\d+$/.test(candidateCode)?candidateCode:(sourceTable==='crm_cobroke_requests'?'AG-'+row.id:'AG-'+row.id);
@@ -2566,9 +2605,11 @@ function ephCommissionDashboardStats(){
    if(!pn&&!raw.name){skipped++;continue;}
    let existing=canonical.find(x=>String(x.data?.googleFormRequestId||'')===String(r.id||''));
    if(!existing)existing=canonical.find(x=>candidateCode&&getCode(x.data||{})===candidateCode);
-   if(!existing&&pn)existing=canonical.find(x=>phoneKey((x.data||{}).phone||(x.data||{}).mobile)===pn);
+   if(!existing&&pn)existing=canonical.find(x=>{const d=x.data&&typeof x.data==='object'?x.data:{};const c=getCode(d);const source=String(d.source||'').toLowerCase();return /^AGBK\d+$/.test(c)&&(source==='google form'||!!d.googleFormRequestId)&&phoneKey(d.phone||d.mobile)===pn;});
    // The request ID stored in crm_records is the durable import marker. The legacy
    // crm_cobroke_requests table may not have crm_imported/crm_agent_code columns.
+   if(existing&&/^AB\d+$/i.test(getCode(existing.data||''))&&!/^AGBK\d+$/i.test(candidateCode)){skipped++;continue;}
+   if(existing&&/^AB\d+$/i.test(getCode(existing.data||''))&&!String(existing.data?.googleFormRequestId||'')){existing=null;}
    if(existing&&String(existing.data?.googleFormRequestId||'')===String(r.id||'')){skipped++;continue;}
    if(r.crm_imported===true&&existing){skipped++;continue;}
    // Keep an existing canonical Agent code stable when another request has the same phone.
@@ -3007,29 +3048,25 @@ function ephCommissionDashboardStats(){
    return explicit ? (source==='lease'?'agreement:':'record:')+explicit : source+':'+contact+'|'+typeOf(row);
  }
  function statistics(){
+   // Agreement Tracker is the single source of truth for this summary.
+   // Customer Leads and Agent Database may contain agreement fields too, but those
+   // are metadata/copies and must NOT increase the total. Otherwise 11 tracker
+   // records can incorrectly become 13 (or another number) after cross-source sync.
    const leaseRows=Array.isArray(window.leases)?window.leases:[];
-   const leadRows=Array.isArray(window.leads)?window.leads:[];
-   const agentRows=Array.isArray(window.agents)?window.agents:[];
-   const all=[],seen=new Set();
-   function add(row,source){
+   const all=[];
+   const seen=new Set();
+   leaseRows.forEach(row=>{
      if(!row)return;
-     const key=keyOf(row,source);
-     // A central agreement record is canonical. Linked lead/agent copies are used only when no central record exists.
-     if(source!=='lease' && (seen.has('agreement:'+clean(row.linkedAgreementId||row.agreementId||row.latestAgreementId||row.leaseId)) || seen.has('agreement:'+clean(row.id))))return;
+     const key=keyOf(row,'lease');
      if(seen.has(key))return;
-     seen.add(key); all.push({...row,_statSource:source});
-   }
-   leaseRows.forEach(r=>add(r,'lease'));
-   [...leadRows,...agentRows].forEach(r=>{
-     const linked=clean(r.linkedAgreementId||r.agreementId||r.latestAgreementId||r.leaseId);
-     if(linked && leaseRows.some(l=>clean(l.id)===linked || clean(l.agreementId)===linked))return;
-     add(r,leadRows.includes(r)?'lead':'agent');
+     seen.add(key);
+     all.push({...row,_statSource:'lease'});
    });
    const byStatus=Object.fromEntries(ORDER.map(k=>[k,0]));
    const byType={SPA:Object.fromEntries(ORDER.map(k=>[k,0])),'Tenancy Agreement':Object.fromEntries(ORDER.map(k=>[k,0]))};
    all.forEach(r=>{const st=statusOf(r),ty=typeOf(r);byStatus[st]++;byType[ty][st]++;});
    const statCard=(label,value,sub='')=>`<div class="stat"><div class="stat-head">${escapeHtml(label)}</div><strong>${value}</strong>${sub?`<span class="muted">${escapeHtml(sub)}</span>`:''}</div>`;
-   const cards=`<section class="panel" id="eph-central-agreement-statistics" style="margin-bottom:16px"><div class="panel-head"><div><h3>SPA / Tenancy Status Statistics</h3><p>Automatic totals from saved SPA / Tenancy Reminder records, plus Customer Leads and Agent Database records not yet linked to a central agreement. Recalculates whenever the CRM data is rendered or refreshed.</p></div><span class="pill gold">${all.length} total</span></div><div class="stats">${statCard('Total Agreements',all.length,'Deduplicated agreement records')}${statCard('SPA',all.filter(r=>typeOf(r)==='SPA').length,'Buyer agreements')}${statCard('Tenancy Agreement',all.filter(r=>typeOf(r)==='Tenancy Agreement').length,'Tenant agreements')}${ORDER.map(k=>statCard(k,byStatus[k])).join('')}</div><div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Document Type</th>${ORDER.map(k=>`<th>${escapeHtml(k)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${['SPA','Tenancy Agreement'].map(ty=>{const total=Object.values(byType[ty]).reduce((a,b)=>a+b,0);return `<tr><td><b>${ty}</b></td>${ORDER.map(k=>`<td>${byType[ty][k]||0}</td>`).join('')}<td><b>${total}</b></td></tr>`;}).join('')}<tr><td><b>All Agreements</b></td>${ORDER.map(k=>`<td><b>${byStatus[k]||0}</b></td>`).join('')}<td><b>${all.length}</b></td></tr></tbody></table></div></section>`;
+   const cards=`<section class="panel" id="eph-central-agreement-statistics" style="margin-bottom:16px"><div class="panel-head"><div><h3>SPA / Tenancy Status Statistics</h3><p>Automatic totals from the saved Agreement Tracker records only. Customer Leads and Agent Database copies are not counted separately. Recalculates whenever the CRM data is rendered or refreshed.</p></div><span class="pill gold">${all.length} total</span></div><div class="stats">${statCard('Total Agreements',all.length,'Deduplicated agreement records')}${statCard('SPA',all.filter(r=>typeOf(r)==='SPA').length,'Buyer agreements')}${statCard('Tenancy Agreement',all.filter(r=>typeOf(r)==='Tenancy Agreement').length,'Tenant agreements')}${ORDER.map(k=>statCard(k,byStatus[k])).join('')}</div><div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Document Type</th>${ORDER.map(k=>`<th>${escapeHtml(k)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${['SPA','Tenancy Agreement'].map(ty=>{const total=Object.values(byType[ty]).reduce((a,b)=>a+b,0);return `<tr><td><b>${ty}</b></td>${ORDER.map(k=>`<td>${byType[ty][k]||0}</td>`).join('')}<td><b>${total}</b></td></tr>`;}).join('')}<tr><td><b>All Agreements</b></td>${ORDER.map(k=>`<td><b>${byStatus[k]||0}</b></td>`).join('')}<td><b>${all.length}</b></td></tr></tbody></table></div></section>`;
    return cards;
  }
  window.leasesPage=function(){
@@ -3507,16 +3544,65 @@ function ephCommissionDashboardStats(){
  const kindOf=r=>{const v=T(val(r,['kind','kindLabel','contractKind','latestAgreementKind','documentType','document','agreementType','agreement_type','type','role','customerType','customer_type'])).toLowerCase();if(/tenancy|tenant|lease/.test(v))return 'Tenancy Agreement';if(/spa|buyer|sale|purchase/.test(v))return 'SPA';const role=roleOf(r);return role==='Tenant'?'Tenancy Agreement':role==='Buyer'?'SPA':'';};
  const statusOf=r=>{const raw=T(val(r,['contractStatus','latestAgreementStatus','agreementStatus','agreement_status','status','workflowStatus','documentStatus']));const n=raw.toLowerCase();if(/complet|closed|fully executed/.test(n))return 'Completed';if(/signed|executed/.test(n))return 'Signed';if(/pending|await|signature|signing|in progress/.test(n))return 'Pending Signature';if(/draft/.test(n))return 'Drafting';return ORDER.includes(raw)?raw:'Other / Blank';};
  const dateOf=(r,names)=>T(val(r,names));
- const agreementEvidence=r=>!!(val(r,['agreementId','linkedAgreementId','latestAgreementId','leaseId','contractId','signingDate','signatureDate','expectedSigningDate','contractStartDate','contractEndDate','leaseEnd','expiryDate','tenancyExpiryDate','contractStatus','latestAgreementStatus','agreementStatus','agreement_status','agreementType','agreement_type','documentType','document','file','fileUrl','documentUrl','spaFile','tenancyAgreementFile']));
+ const agreementEvidence=r=>{
+   const explicit=!!val(r,['agreementId','linkedAgreementId','latestAgreementId','leaseId','contractId','signingDate','signatureDate','expectedSigningDate','contractStartDate','contractEndDate','leaseEnd','expiryDate','tenancyExpiryDate','contractStatus','latestAgreementStatus','agreementStatus','agreement_status','agreementType','agreement_type','documentType','document','file','fileUrl','documentUrl','spaFile','tenancyAgreementFile']);
+   const status=T(val(r,['status','contractStatus','latestAgreementStatus','agreementStatus','agreement_status','workflowStatus','documentStatus']));
+   return explicit || /SPA\s*(signed|completed|pending|draft)|tenancy\s+agreement\s*(signed|completed|pending|draft)|pending\s+signature|signed|drafting|completed/i.test(status);
+ };
  const identity=r=>T(val(r,['displayCode','customerCode','customer_code','customer_id','_eph_customer_id','agentCode','agentId','_dbid','id','phone','mobile','whatsapp','email','name','fullName','person','customerName']));
  const phoneKey=v=>T(v).replace(/\D/g,'');
  const lastStamp=r=>{const a=[r.updated_at,r.updated,r.updatedAt,r.lastUpdated,r.last_updated,r.created_at,r.createdAt,r.date,r.signingDate].map(T).filter(Boolean);let best=0;for(const x of a){const n=Date.parse(x);if(Number.isFinite(n)&&n>best)best=n;}return best;};
  const displayLast=r=>{const v=r._lastUpdated||r.updated_at||r.updated||r.updatedAt||r.lastUpdated||r.last_updated||r.modified_at||r.created_at||r.createdAt||'';if(!T(v))return '—';const d=new Date(v);if(!Number.isFinite(d.getTime()))return '—';try{return new Intl.DateTimeFormat('en-MY',{timeZone:'Asia/Kuala_Lumpur',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d)+' MYT';}catch(e){return d.toISOString();}};
  function sourceRows(){
-   const central=Array.isArray(leases)?leases:[];
-   const leadList=Array.isArray(leads)?leads:[];
-   const agentList=Array.isArray(agents)?agents:[];
+   // Tan (Google Form agent AGBK001, phone +601143543423) was explicitly deleted
+   // from the CRM. The linked agreement can remain in crm_agreement_tracker even
+   // after crm_records is deleted, so exclude this deleted identity from every
+   // tracker/statistics/reminder source until the stale central row is removed.
+   const isDeletedTan=r=>{
+     const name=norm(val(r,['person','name','fullName','customerName','agent_name','agentName']));
+     const code=String(val(r,['agentCode','agent_code','agentId','agentRef','displayCode','id','source_record_id'])||'').toUpperCase();
+     const phone=phoneKey(val(r,['phone','mobile','whatsapp','whatsappPhone','agent_phone','agentPhone']));
+     const tanName=name==='tan';
+     return (tanName && (/AGBK001/.test(code) || phone==='601143543423' || phone==='01143543423')) ||
+            (tanName && String(val(r,['id','displayCode'])||'').toUpperCase().includes('AGBK001'));
+   };
+   const central=(Array.isArray(leases)?leases:[]).filter(r=>!isDeletedTan(r));
+   // Use the actual Customer Lead and Agent Database arrays as the source of truth.
+   // Overlay the currently open lead/agent form so status changes affect statistics
+   // while typing, before Save updates the underlying array.
+   const liveSourceRows=(arr,kind)=>{
+     const rows=(Array.isArray(arr)?arr:[]).filter(r=>!isDeletedTan(r)).map(r=>({...r}));
+     const title=String(document.getElementById('modalTitle')?.textContent||'');
+     const isLead=/customer lead/i.test(title)||/^Add Customer Lead$/i.test(title);
+     const isAgent=/agent/i.test(title);
+     if(!(kind==='lead'&&isLead)&&!(kind==='agent'&&isAgent))return rows;
+     const get=k=>{const el=document.getElementById('f_'+k);return el?el.value:undefined;};
+     const match=title.match(/^View \/ Edit\s+(.+)$/i);
+     const row=match?rows.find(r=>String(r.id||'')===match[1].trim()):null;
+     const draft={...(row||{}), name:get('name')??'', phone:get('phone')??'', status:get('status')??'', updated_at:new Date().toISOString()};
+     if(kind==='lead')Object.assign(draft,{type:get('type')??draft.type??'', requirement:get('requirement')??draft.requirement??'', location:get('location')??draft.location??'', budget:get('budget')??draft.budget??'', remark:get('remark')??draft.remark??''});
+     else Object.assign(draft,{company:get('company')??draft.company??'', specialty:get('specialty')??draft.specialty??'', remark:get('remark')??draft.remark??''});
+     if(row){const i=rows.findIndex(r=>String(r.id||'')===String(row.id||''));rows[i]=draft;}
+     else if(/^Add Customer Lead$/i.test(title)||/^Add Agent/i.test(title))rows.unshift(draft);
+     return rows;
+   };
+   const leadList=liveSourceRows(typeof leads!=='undefined'?leads:window.leads,'lead');
+   const agentList=liveSourceRows(typeof agents!=='undefined'?agents:window.agents,'agent');
    const all=[]; const byKey=new Map(); const centralIds=new Set(central.map(r=>T(r.id||r._dbid||r.agreementId)).filter(Boolean));
+   // Build broad identities from the saved Agreement Tracker first. The tracker is
+   // still part of the full-source calculation, but when Customer Leads / Agent
+   // Database contain a copy of an existing agreement, the copy must not become a
+   // second agreement merely because its date/property/document ID is incomplete.
+   const centralPersonType=new Set();
+   central.forEach(r=>{
+     const ty=kindOf(r); if(!ty)return;
+     const ph=phoneKey(val(r,['phone','mobile','whatsapp','whatsappPhone']));
+     const nm=norm(val(r,['name','fullName','person','customerName','agent_name','agentName','customer_name']));
+     const code=norm(val(r,['displayCode','customerCode','customer_code','customer_id','_eph_customer_id','agentCode','agentId']));
+     if(ph)centralPersonType.add('phone:'+ph+'|'+ty);
+     if(nm)centralPersonType.add('name:'+nm+'|'+ty);
+     if(code)centralPersonType.add('code:'+code+'|'+ty);
+   });
    const leadById=new Map(); const leadByPhone=new Map(); const leadByName=new Map();
    for(const l of leadList){
      const id=T(val(l,['displayCode','customerCode','customer_code','customer_id','_eph_customer_id','id'])); if(id)leadById.set(norm(id),l);
@@ -3544,7 +3630,25 @@ function ephCommissionDashboardStats(){
    };
    function add(item){
      if(!item)return;
-     if(item._source!=='central' && item._raw && T(val(item._raw,['linkedAgreementId','agreementId','latestAgreementId','leaseId'])) && centralIds.has(T(val(item._raw,['linkedAgreementId','agreementId','latestAgreementId','leaseId']))))return;
+     if(item._source!=='central'){
+       const raw=item._raw||{};
+       const linked=T(val(raw,['linkedAgreementId','agreementId','latestAgreementId','leaseId']));
+       if(linked && centralIds.has(linked))return;
+       // Suppress source copies that belong to a person/type already represented
+       // by a saved tracker agreement. We still read all three sources; this only
+       // prevents the same agreement from being counted twice.
+       const ph=phoneKey(val(raw,['phone','mobile','whatsapp','whatsappPhone']));
+       const nm=norm(val(raw,['name','fullName','person','customerName','agent_name','agentName','customer_name']));
+       const code=norm(val(raw,['displayCode','customerCode','customer_code','customer_id','_eph_customer_id','agentCode','agentId']));
+       // Agreement Tracker is the canonical list for an agreement already attached
+       // to the same person/type. Customer Lead and Agent rows are source mirrors,
+       // so they must NEVER add another agreement merely because their date,
+       // property or database ID differs. Independent agreements are still counted
+       // when no matching central person/type exists.
+       if((ph&&centralPersonType.has('phone:'+ph+'|'+item._type)) ||
+          (nm&&centralPersonType.has('name:'+nm+'|'+item._type)) ||
+          (code&&centralPersonType.has('code:'+code+'|'+item._type))) return;
+     }
      const old=byKey.get(item._key);
      if(old){
        if(item._lastStamp>old._lastStamp){old._lastUpdated=item._lastUpdated;old._lastStamp=item._lastStamp;}
@@ -3583,7 +3687,15 @@ function ephCommissionDashboardStats(){
    });
  }
  function renderStats(){
-   const all=sourceRows();const byStatus=Object.fromEntries(ORDER.map(k=>[k,0]));const byType={SPA:Object.fromEntries(ORDER.map(k=>[k,0])),'Tenancy Agreement':Object.fromEntries(ORDER.map(k=>[k,0]))};
+   // Match the exact same deduplication rule used by tracker(), so the headline
+   // statistics can never disagree with the visible Agreement Tracker row count.
+   let all=sourceRows();
+   const trackerName=r=>norm(val(r,['person','name','fullName','customerName','agentName','agent_name']));
+   const trackerDate=r=>String(val(r,['date','documentDate','signingDate','signatureDate','contractStartDate'])||'').slice(0,10);
+   const trackerCode=r=>String(val(r,['agentCode','agent_code','linkedAgentId','agentId','agentRef','ref'])||String(val(r,['id','displayCode'])||'').match(/AGBK\d+|AB\d+/i)?.[0]||'').toUpperCase();
+   const manualAgreementKeys=new Set(all.filter(r=>/^AB\d+$/.test(trackerCode(r))).map(r=>trackerName(r)+'|'+String(r._agreementType||'')+'|'+trackerDate(r)));
+   all=all.filter(r=>!(/^AGBK\d+$/.test(trackerCode(r))&&manualAgreementKeys.has(trackerName(r)+'|'+String(r._agreementType||'')+'|'+trackerDate(r))));
+   const byStatus=Object.fromEntries(ORDER.map(k=>[k,0]));const byType={SPA:Object.fromEntries(ORDER.map(k=>[k,0])),'Tenancy Agreement':Object.fromEntries(ORDER.map(k=>[k,0]))};
    all.forEach(r=>{const ty=r._agreementType,st=r._agreementStatus;if(byType[ty])byType[ty][st]++;byStatus[st]++;});
    const card=(l,v,s='')=>`<div class="stat"><div class="stat-head">${H(l)}</div><strong>${v}</strong>${s?`<span class="muted">${H(s)}</span>`:''}</div>`;
    return `<section class="panel" id="eph-central-agreement-statistics" style="margin-bottom:16px"><div class="panel-head"><div><h3>SPA / Tenancy Status Statistics</h3><p>Customer Leads + Agent Database + saved SPA / Tenancy records. Deduplicated and recalculated immediately from current CRM data.</p></div><span class="pill gold">${all.length} total</span></div><div class="stats">${card('Total Agreements',all.length,'All deduplicated records')}${card('SPA',all.filter(r=>r._agreementType==='SPA').length,'Buyer agreements')}${card('Tenancy Agreement',all.filter(r=>r._agreementType==='Tenancy Agreement').length,'Tenant agreements')}${ORDER.map(k=>card(k,byStatus[k])).join('')}</div><div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Document Type</th>${ORDER.map(k=>`<th>${H(k)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${['SPA','Tenancy Agreement'].map(ty=>{const total=Object.values(byType[ty]).reduce((a,b)=>a+b,0);return `<tr><td><b>${ty}</b></td>${ORDER.map(k=>`<td>${byType[ty][k]}</td>`).join('')}<td><b>${total}</b></td></tr>`}).join('')}<tr><td><b>All Agreements</b></td>${ORDER.map(k=>`<td><b>${byStatus[k]}</b></td>`).join('')}<td><b>${all.length}</b></td></tr></tbody></table></div></section>`;
@@ -4061,5 +4173,84 @@ function ephCommissionDashboardStats(){
      leases=[...merged,...current.filter(x=>x._centralAgreementTableId==null)];
    }catch(e){console.warn('Existing crm_agreement_tracker table could not be loaded; CRM records remain available.',e&&e.message||e);}
  };
+})();
+</script>
+
+
+<script id="eph-spa-tenancy-live-input-sync-20261020">
+(function(){
+  if(window.__ephSpaTenancyLiveInputSyncInstalled)return;
+  window.__ephSpaTenancyLiveInputSyncInstalled=true;
+  const originalShowModal=window.showModal;
+  if(typeof originalShowModal!=='function')return;
+  let liveDraft=null, liveExisting=null, saveTimer=null, saving=false, lastFingerprint='';
+  const fields=['ref','person','property','agentRef','agentName','kind','status','date','signingDate','signingReminderDays','leaseStart','leaseEnd','remindDays','nextFollowUpDate','documentUrl','remark'];
+  const getForm=()=>{const out={};fields.forEach(k=>{const el=document.getElementById('f_'+k);if(el)out[k]=el.value;});return out;};
+  const findExisting=title=>{
+    const m=String(title||'').match(/^View \/ Edit\s+(.+)$/i);if(!m)return null;
+    const id=m[1].trim();const rows=(typeof leases!=='undefined'&&Array.isArray(leases))?leases:(window.leases||[]);return rows.find(x=>String(x.id||'')===id||String(x._dbid||'')===id)||null;
+  };
+  function refreshLivePreview(){
+    if(!liveDraft)return;
+    const v=getForm();Object.assign(liveDraft,v);
+    liveDraft.kind=v.kind||liveDraft.kind||'SPA';liveDraft.kindLabel=liveDraft.kind;
+    liveDraft.status=v.status||liveDraft.status||'Other / Blank';
+    liveDraft.signingDate=v.signingDate||'';liveDraft.leaseEnd=v.leaseEnd||'';
+    liveDraft.updated_at=new Date().toISOString();
+    const arr=(typeof leases!=='undefined'&&Array.isArray(leases))?leases:window.leases;
+    if(Array.isArray(arr)){
+      const idx=arr.findIndex(x=>x===liveDraft||String(x.id||'')===String(liveDraft.id||''));
+      if(idx>=0)arr[idx]={...arr[idx],...liveDraft};else arr.push(liveDraft);
+    }
+    try{if(typeof window.render==='function')window.render();}catch(e){}
+    const box=document.getElementById('modalContent');
+    if(box){let note=document.getElementById('ephAgreementLiveInputStatus');if(!note){note=document.createElement('div');note.id='ephAgreementLiveInputStatus';note.className='notice';note.style.marginTop='10px';box.appendChild(note);}note.textContent=liveExisting?'Live statistics updated while typing. This existing record will sync to Supabase automatically.':'Live statistics preview updated while typing. A new record is sent to Supabase when you press Save.';}
+  }
+  window.showModal=function(title,formFields,onSave){
+    const candidateExisting=findExisting(title);
+    const isAgreement=/SPA\s*\/\s*Tenancy|Tenancy Agreement|Agreement/i.test(String(title||''))||!!candidateExisting;
+    if(!isAgreement)return originalShowModal.apply(this,arguments);
+    if(saveTimer){clearTimeout(saveTimer);saveTimer=null;}
+    liveExisting=findExisting(title);
+    liveDraft=liveExisting?{...liveExisting}: {id:'LIVE-DRAFT-'+Date.now(),kind:'SPA',kindLabel:'SPA',status:'Other / Blank',_liveDraft:true,created_at:new Date().toISOString()};
+    lastFingerprint='';saving=false;
+    const wrappedSave=async values=>{
+      if(saveTimer){clearTimeout(saveTimer);saveTimer=null;}
+      const leaseRows=(typeof leases!=='undefined'&&Array.isArray(leases))?leases:window.leases;if(Array.isArray(leaseRows)){const kept=leaseRows.filter(x=>x!==liveDraft&&String(x.id||'')!==String(liveDraft?.id||''));if(typeof leases!=='undefined'&&Array.isArray(leases))leases=kept;else window.leases=kept;}
+      try{return await onSave(values);}finally{liveDraft=null;liveExisting=null;try{if(typeof window.render==='function')window.render();}catch(e){}}
+    };
+    const result=originalShowModal.call(this,title,formFields,wrappedSave);
+    const modal=document.getElementById('modalContent');
+    if(modal){
+      const onEdit=ev=>{
+        const el=ev.target;if(!el||!/^f_(ref|person|property|agentRef|agentName|kind|status|date|signingDate|signingReminderDays|leaseStart|leaseEnd|remindDays|nextFollowUpDate|documentUrl|remark)$/.test(el.id||''))return;
+        refreshLivePreview();
+        if(!liveExisting||(liveExisting._dbid==null&&liveExisting._centralAgreementTableId==null))return;if(liveExisting._centralAgreementTableId==null&&typeof window.ephSaveKind!=='function')return;
+        if(saveTimer)clearTimeout(saveTimer);
+        const snapshot={...liveDraft};const fingerprint=JSON.stringify(snapshot);if(fingerprint===lastFingerprint)return;
+        saveTimer=setTimeout(async()=>{
+          if(saving)return;saving=true;
+          try{
+            const clean=Object.fromEntries(Object.entries(snapshot).filter(([k])=>!k.startsWith('_')));
+            if(liveExisting._centralAgreementTableId!=null){
+              const centralBody={source_record_id:String(snapshot.source_record_id||liveExisting.source_record_id||''),source_kind:String(snapshot.source_kind||liveExisting.source_kind||'central'),agent_code:snapshot.agentRef||snapshot.agentCode||null,agent_name:snapshot.agentName||null,customer_id:snapshot.ref||null,customer_name:snapshot.person||null,agreement_type:snapshot.kind||snapshot.kindLabel||'SPA',agreement_status:snapshot.status||'Other / Blank',agreement_date:snapshot.signingDate||snapshot.date||snapshot.leaseStart||null,expiry_date:snapshot.leaseEnd||null,file_name:snapshot.documentName||null,file_url:snapshot.documentUrl||null,updated_at:new Date().toISOString()};
+              const saved=await ephRequest('/rest/v1/crm_agreement_tracker?id=eq.'+encodeURIComponent(String(liveExisting._centralAgreementTableId)),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify(centralBody)});
+              if(!Array.isArray(saved.data)||!saved.data.length)throw new Error('Supabase did not confirm central agreement update.');
+            }else{
+              if(liveExisting._dbid==null)throw new Error('This record has no editable Supabase row ID; no duplicate was created.');
+              await window.ephSaveKind('lease',clean,liveExisting._dbid);
+            }
+            lastFingerprint=fingerprint;
+            const note=document.getElementById('ephAgreementLiveInputStatus');if(note)note.textContent='Saved to Supabase automatically · '+new Date().toLocaleTimeString();
+          }catch(err){const note=document.getElementById('ephAgreementLiveInputStatus');if(note)note.textContent='Live statistics updated, but Supabase auto-save failed: '+(err.message||err);}
+          finally{saving=false;}
+        },650);
+      };
+      modal.addEventListener('input',onEdit,true);modal.addEventListener('change',onEdit,true);
+      // Seed the live preview with current field values without triggering a database write.
+      setTimeout(refreshLivePreview,0);
+    }
+    return result;
+  };
 })();
 </script>
