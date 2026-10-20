@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="theme-color" content="#101114">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#101114">
 <title>Evelyn Property Hub | CRM</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
@@ -31,6 +31,57 @@
 .eph-agreement-horizontal-track{display:block;width:100%;height:20px;overflow-x:scroll!important;overflow-y:hidden;margin:7px 0 12px;background:#25272d;border:1px solid #4b4e57;border-radius:8px;cursor:ew-resize;scrollbar-width:auto;scrollbar-color:var(--gold) #25272d;touch-action:pan-x;overscroll-behavior-x:contain}
 .eph-agreement-horizontal-track>div{height:1px;min-width:100%}
 .eph-agreement-pager input[type=range]{cursor:ew-resize;accent-color:var(--gold);touch-action:pan-y}
+
+/* Cross-device compatibility layer: preserve existing black-gold design and features. */
+html{width:100%;min-height:100%;-webkit-text-size-adjust:100%;text-size-adjust:100%;scroll-behavior:auto}
+body{width:100%;min-width:0;min-height:100%;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
+button,a,input,select,textarea,[role="button"]{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+button{min-height:38px}
+input,select,textarea{font-size:16px;max-width:100%}
+img,video,canvas,svg{max-width:100%}
+.modal-backdrop{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.modal{max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.customer-shell{min-height:100vh;min-height:100dvh}
+.public-header{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
+.public-content{padding-bottom:calc(70px + env(safe-area-inset-bottom))}
+@media (max-width: 760px){
+  html,body{overflow-x:hidden}
+  .app{display:block;width:100%;min-width:0}
+  .main,.content,.panel,.panel-body,.panel-head{min-width:0;max-width:100%}
+  .topbar{position:sticky;top:0;z-index:30;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right));gap:8px}
+  .top-actions{min-width:0;max-width:58%;}
+  .search{min-width:0;max-width:100%}
+  .search input{min-width:0;max-width:100%;width:clamp(90px,32vw,210px)}
+  .content{padding-left:12px;padding-right:12px;padding-bottom:calc(92px + env(safe-area-inset-bottom))}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .toolbar,.actions{max-width:100%;flex-wrap:wrap}
+  .toolbar>* ,.actions>*{max-width:100%;min-width:0}
+  .form-grid{grid-template-columns:minmax(0,1fr)}
+  .form-group,.form-group.full{min-width:0;grid-column:1/-1}
+  .field{width:100%;min-width:0}
+  .table-wrap,.eph-agreement-table-scroll{max-width:100%;overflow-x:auto!important;-webkit-overflow-scrolling:touch;touch-action:pan-x}
+  .mobile-nav{padding-bottom:calc(7px + env(safe-area-inset-bottom));z-index:40}
+  .modal-backdrop{align-items:flex-start;padding:calc(8px + env(safe-area-inset-top)) 8px calc(8px + env(safe-area-inset-bottom))}
+  .modal{width:100%;max-width:100%;border-radius:14px}
+  #ephCustomerViewingModal .modal{width:100%!important;max-width:100%!important;max-height:calc(100dvh - 16px);}
+  #ephCustomerViewingModal .modal-content{padding:14px}
+  #ephCustomerViewingModal .actions{display:flex;flex-direction:column;gap:8px}
+  #ephCustomerViewingModal .actions button{width:100%;white-space:normal}
+  .public-header{height:auto;min-height:66px;flex-wrap:wrap;padding-top:10px;padding-bottom:10px;gap:10px}
+  .public-nav{max-width:100%;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+  .public-nav a{flex:0 0 auto}
+  .hero{grid-template-columns:minmax(0,1fr);min-height:0;gap:14px}
+  .hero-copy{padding:18px 0}
+  .hero-visual{min-height:220px}
+  .hero-actions{width:100%}
+  .hero-actions .btn{flex:1 1 140px;white-space:normal}
+  .eph-public-grid{grid-template-columns:minmax(0,1fr)!important}
+}
+@supports (-webkit-touch-callout:none){
+  input,select,textarea{font-size:16px}
+  .modal,.modal-backdrop,.table-wrap,.eph-agreement-table-scroll{ -webkit-overflow-scrolling:touch }
+}
+
 </style>
 <style>
 :root{--bg:#0c0d10;--panel:#15171c;--panel2:#1b1e24;--line:#2b2e36;--gold:#d7a84b;--gold2:#f1c66d;--text:#f3f1eb;--muted:#9da1aa;--green:#53c69a;--red:#f17d7d;--blue:#7eb7f4;--radius:16px}*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--gold);outline-offset:2px}.app{min-height:100vh;display:grid;grid-template-columns:250px minmax(0,1fr)}aside{background:#101115;border-right:1px solid var(--line);padding:24px 16px;display:flex;flex-direction:column;gap:24px;min-height:100vh}.brand{display:flex;align-items:center;gap:12px;padding:0 8px}.logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#f1c66d,#a97624);color:#16120a;display:grid;place-items:center;font-weight:900;font-size:19px;box-shadow:0 5px 20px #d7a84b22}.brand h1{font-size:15px;line-height:1.2;margin:0;letter-spacing:.4px}.brand small{display:block;color:var(--gold2);font-size:10px;letter-spacing:1.6px;margin-top:4px}.nav-label{color:#6f737d;font-size:10px;font-weight:800;letter-spacing:1.6px;padding:0 12px;margin:4px 0 7px}.nav{display:grid;gap:5px}.nav button{display:flex;align-items:center;gap:12px;width:100%;border:1px solid transparent;border-radius:11px;background:transparent;color:#aeb1b9;padding:11px 12px;text-align:left;transition:.15s}.nav button .ico{width:20px;text-align:center;font-size:16px}.nav button.active,.nav button:hover{background:#29251b;border-color:#554222;color:#f5d58c}.nav button.active{box-shadow:inset 3px 0 var(--gold)}.nav button .count{margin-left:auto;background:#282b32;color:#c8cbd2;border-radius:7px;padding:2px 6px;font-size:11px}.aside-bottom{margin-top:auto;background:linear-gradient(140deg,#211d14,#17181d);border:1px solid #4a3b21;border-radius:14px;padding:14px}.aside-bottom b{display:block;font-size:12px}.aside-bottom p{color:var(--muted);font-size:11px;margin:6px 0 12px}.tiny{font-size:10px;color:#767a84}.main{min-width:0}.topbar{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 30px;gap:16px;background:#0f1014eF;position:sticky;top:0;z-index:5;backdrop-filter:blur(12px)}.crumb{color:var(--muted);font-size:12px}.crumb strong{color:var(--text);font-size:14px;margin-left:7px}.top-actions{display:flex;align-items:center;gap:10px}.search{position:relative}.search input{width:min(290px,28vw);background:#191b21;border:1px solid var(--line);border-radius:10px;padding:10px 12px 10px 35px;color:var(--text)}.search span{position:absolute;left:12px;top:9px;color:#818590}.avatar{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:#3a2c16;color:#f6d88d;border:1px solid #715421;font-weight:800}.content{padding:28px 30px 50px;max-width:1600px;margin:auto}.welcome{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:24px}.eyebrow{color:var(--gold);font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase}.welcome h2{font-size:27px;letter-spacing:-.8px;margin:5px 0}.welcome p{margin:0;color:var(--muted)}.btn{border:1px solid var(--line);background:#202229;color:var(--text);padding:10px 14px;border-radius:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap}.btn:hover{border-color:#8a6a31}.btn.gold{background:linear-gradient(135deg,#f0c96f,#c28a2d);border-color:#d9ad50;color:#211708}.btn.small{padding:6px 9px;font-size:11px;border-radius:8px}.btn.ghost{background:transparent}.btn.danger{color:#ffaaaa;border-color:#653737;background:#28191b}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}.stat{background:linear-gradient(135deg,#191b20,#141519);border:1px solid var(--line);border-radius:var(--radius);padding:17px 18px;position:relative;overflow:hidden}.stat:after{content:"";position:absolute;width:90px;height:90px;border-radius:50%;right:-36px;top:-38px;border:1px solid #d7a84b26;box-shadow:0 0 0 12px #d7a84b08,0 0 0 25px #d7a84b05}.stat-head{display:flex;justify-content:space-between;color:var(--muted);font-size:12px}.stat-icon{color:var(--gold);font-size:17px}.stat strong{display:block;font-size:29px;letter-spacing:-.7px;margin:13px 0 5px}.trend{font-size:11px;color:var(--green)}.muted{color:var(--muted)}.grid-main{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(280px,.9fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);min-width:0}.panel-head{padding:17px 19px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}.panel-head h3{margin:0;font-size:14px}.panel-head p{margin:4px 0 0;color:var(--muted);font-size:11px}.panel-body{padding:16px 19px}.listing-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #282b31}.listing-row:last-child{border-bottom:0}.property-thumb{height:45px;width:48px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(135deg,#493a22,#24242a);font-size:21px;border:1px solid #57452a}.listing-row strong{display:block;font-size:12px}.listing-row small{color:var(--muted);font-size:11px}.price{text-align:right;font-weight:800;color:var(--gold2);font-size:12px}.price small{display:block;color:var(--muted);font-weight:400}.task{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid #282b31}.task:last-child{border:0}.task-dot{width:9px;height:9px;border-radius:50%;background:var(--gold);margin-top:5px;flex-shrink:0;box-shadow:0 0 0 4px #d7a84b14}.task strong{font-size:12px;display:block}.task p{margin:3px 0;color:var(--muted);font-size:11px}.pill{display:inline-flex;align-items:center;gap:5px;border:1px solid #343741;border-radius:7px;padding:3px 7px;font-size:10px;color:#c4c7ce;background:#202229}.pill.gold{border-color:#65502c;color:#f0cd7d;background:#2c2518}.pill.green{border-color:#2c5b4b;color:#85e0bb;background:#162820}.pill.blue{border-color:#2d4c6b;color:#9ecbff;background:#182332}.pill.red{border-color:#673b3b;color:#ffaaaa;background:#2b1b1d}.section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px}.section-head h2{margin:4px 0;font-size:25px;letter-spacing:-.6px}.section-head p{margin:0;color:var(--muted)}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.field{background:#101216;color:var(--text);border:1px solid #343741;border-radius:9px;padding:9px 11px;min-width:0}.field::placeholder{color:#777c86}.field option{background:#15171c}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:720px}th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#858995;font-weight:800;background:#191b20;padding:12px 15px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:13px 15px;border-bottom:1px solid #292c33;color:#d8d9de;font-size:12px;vertical-align:middle}tbody tr:hover{background:#1a1c21}td b{font-weight:700;color:#f3f1eb}td small{display:block;color:var(--muted);font-size:10px;margin-top:3px}.table-actions{display:flex;gap:5px}.tabs{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:15px}.tab{background:transparent;border:1px solid var(--line);border-radius:9px;padding:8px 12px;color:#aeb1ba;font-size:12px}.tab.active{background:#302719;color:#f4d58d;border-color:#71582e}.notice{background:#201c14;border:1px solid #594524;color:#d9c49b;border-radius:10px;padding:10px 13px;font-size:11px;margin-bottom:16px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.form-group{display:grid;gap:6px}.form-group label{font-size:11px;color:#a9acb4}.form-group.full{grid-column:1/-1}.form-group .field{width:100%}textarea.field{min-height:80px;resize:vertical}.modal-backdrop{position:fixed;inset:0;background:#000b;z-index:20;display:none;align-items:center;justify-content:center;padding:20px}.modal-backdrop.show{display:flex}.modal{width:min(680px,100%);max-height:90vh;overflow:auto;background:#17191e;border:1px solid #3a3d45;border-radius:18px;box-shadow:0 20px 80px #000a}.modal-head{display:flex;justify-content:space-between;align-items:center;padding:18px 21px;border-bottom:1px solid var(--line)}.modal-head h3{margin:0}.modal-content{padding:20px}.modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:15px 20px;border-top:1px solid var(--line)}.empty{padding:40px;text-align:center;color:var(--muted)}.empty strong{display:block;color:var(--text);margin-bottom:5px}.mobile-menu{display:none}.demo-mark{color:#f0cd7d;font-size:10px;border:1px solid #65502c;background:#2b2418;border-radius:6px;padding:4px 7px;white-space:nowrap}.mobile-nav{display:none}.toast{position:fixed;right:20px;bottom:20px;background:#242820;border:1px solid #47745a;border-radius:10px;padding:12px 16px;z-index:50;box-shadow:0 8px 30px #0008;display:none;max-width:min(380px,90vw)}.toast.show{display:block}.toast.error{border-color:#754545;background:#2b1d1e}
@@ -2084,28 +2135,11 @@ commissionPage=function(){
 
   async function ephSubmitViewingViaBridge(payload){
     if(!EPH_DRIVE_PHOTO_API_URL)throw new Error('Bridge URL is not configured');
-    const frameName='ephViewingBridgeFrame_'+Date.now();
-    const iframe=document.createElement('iframe');iframe.name=frameName;iframe.style.display='none';document.body.appendChild(iframe);
+    const frameName='ephViewingBridgeFrame_'+Date.now();const iframe=document.createElement('iframe');iframe.name=frameName;iframe.style.display='none';document.body.appendChild(iframe);
     const form=document.createElement('form');form.method='POST';form.action=EPH_DRIVE_PHOTO_API_URL;form.target=frameName;form.style.display='none';
-    const input=document.createElement('input');input.type='hidden';input.name='payload';input.value=JSON.stringify(payload);form.appendChild(input);document.body.appendChild(form);
-    try{
-      form.submit();
-    }catch(e){form.remove();iframe.remove();throw new Error('Bridge POST failed: '+(e&&e.message?e.message:String(e)));}
-    form.remove();
-    let lastError='';
-    try{
-      // A POST being sent is NOT proof of persistence. Only the bridge's read-after-write
-      // check may report success; this check must confirm the same ID exists in Supabase.
-      for(let i=0;i<10;i++){
-        await new Promise(resolve=>setTimeout(resolve,1200));
-        try{
-          const check=await ephBridgeJsonp({action:'check',id:payload.id},7000);
-          if(check&&check.ok===true&&check.exists===true)return true;
-          lastError=(check&&check.message)||'Supabase has not confirmed this viewing ID yet.';
-        }catch(e){lastError=e&&e.message?e.message:String(e);}
-      }
-    }finally{setTimeout(()=>iframe.remove(),1000);}
-    throw new Error('Supabase did not confirm saved record '+payload.id+'. '+(lastError||'No confirmation received.'));
+    const input=document.createElement('input');input.type='hidden';input.name='payload';input.value=JSON.stringify(payload);form.appendChild(input);document.body.appendChild(form);form.submit();form.remove();
+    try{for(let i=0;i<12;i++){await new Promise(resolve=>setTimeout(resolve,1000));const check=await ephBridgeJsonp({action:'check',id:payload.id},5000);if(check&&check.ok&&check.exists)return true;}}finally{setTimeout(()=>iframe.remove(),1000);}
+    throw new Error('The secure bridge did not confirm that the viewing request was saved.');
   }
   function openViewingModal(key){
     const x=(ephPublicAllListings||[]).find(y=>String(y._key)===String(key));if(!x)return;
@@ -2116,30 +2150,20 @@ commissionPage=function(){
       const whatsapp=(typeof EPH_PROFILE_DEFAULT!=='undefined'&&EPH_PROFILE_DEFAULT.whatsapp)?String(EPH_PROFILE_DEFAULT.whatsapp).replace(/\D/g,''):'601153922261';
       const wa=window.open('about:blank','_blank');status.textContent='Saving your viewing request…';
       const payload={id:'VW-CUST-'+Date.now(),date,time,person:name,phone,ref,kindLabel:'Customer View Appointment',kind:'viewing',property,status:'Pending',remark,source:'Customer View',created_at:now,updated_at:now,customerName:name,customerPhone:phone,listingReference:ref,preferredDate:date,preferredTime:time,listingCategory:txt(x.cat),listingSource:txt(x.source),listingId:txt(x._id),listingTable:txt(x._table),listingLocation:location,listingPrice:price};
-      let saved=false,saveError='',bridgeError='',directError='';
-      // Customer View is public: use the trusted Apps Script bridge first so the anon key
-      // is not relied on for INSERT permission. Success requires a read-after-write check.
-      if(EPH_DRIVE_PHOTO_API_URL){
-        try{saved=await ephSubmitViewingViaBridge(payload);}
-        catch(err){bridgeError=err&&err.message?err.message:String(err);}
-      }else{bridgeError='Google Apps Script bridge URL is not configured.';}
-      // Secondary attempt only. Even a successful HTTP response is not enough unless Supabase
-      // returns the inserted row; RLS errors and empty responses must remain failures.
-      if(!saved){
-        try{
-          const response=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records',{method:'POST',headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({id:payload.id,kind:'viewing',data:payload,updated_at:now})});
-          const body=await response.text();
-          if(!response.ok)throw new Error('Supabase HTTP '+response.status+': '+body.slice(0,260));
-          let rows=[];try{rows=body?JSON.parse(body):[];}catch(e){}
-          if(!Array.isArray(rows)||!rows.some(row=>String(row.id)===String(payload.id)&&String(row.kind)==='viewing'))throw new Error('Supabase did not return the inserted viewing row '+payload.id+'.');
-          // Verify persistence by querying the exact ID before reporting success.
-          const verify=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records?select=id,kind&id=eq.'+encodeURIComponent(payload.id)+'&kind=eq.viewing&limit=1',{headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY}});
-          const verifyBody=await verify.text();let verified=[];try{verified=verifyBody?JSON.parse(verifyBody):[];}catch(e){}
-          if(!verify.ok||!Array.isArray(verified)||!verified.some(row=>String(row.id)===String(payload.id)))throw new Error('Supabase read-after-write verification failed for '+payload.id+'. '+verifyBody.slice(0,180));
-          saved=true;
-        }catch(err){directError=err&&err.message?err.message:String(err);}
-      }
-      if(!saved)saveError=[bridgeError,directError].filter(Boolean).join(' | ');
+      let saved=false,saveError='',directError='';
+      // Mobile-safe path: submit through the server-side bridge first, then require its
+      // check action to confirm the exact ID exists in Supabase. Never infer success from POST alone.
+      if(EPH_DRIVE_PHOTO_API_URL){try{saved=await ephSubmitViewingViaBridge(payload);}catch(err){saveError=err&&err.message?err.message:String(err);}}
+      // Direct REST is a secondary fallback; require a successful response and then verify by ID.
+      if(!saved){try{
+        const response=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records',{method:'POST',headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({id:payload.id,kind:'viewing',data:payload,updated_at:now})});
+        if(!response.ok){const body=await response.text();throw new Error('Supabase HTTP '+response.status+': '+body.slice(0,260));}
+        const rows=await response.json();
+        if(!Array.isArray(rows)||!rows.some(row=>String(row.id)===String(payload.id)))throw new Error('Supabase did not return the saved viewing record.');
+        saved=true;
+      }catch(err){directError=err&&err.message?err.message:String(err);}}
+      if(!saved)saveError=[saveError,directError].filter(Boolean).join(' | ');
+      if(!saved&&!saveError)saveError=directError||'No server confirmation was received.';
       const waUrl='https://wa.me/'+whatsapp+'?text='+encodeURIComponent(message);if(wa){try{wa.location.href=waUrl;}catch(e){window.open(waUrl,'_blank','noopener');}}else window.open(waUrl,'_blank','noopener');
       status.textContent=saved?'Request saved to CRM and WhatsApp message opened. Your viewing is pending confirmation.':'WhatsApp message opened, but CRM save failed. Supabase/bridge error: '+(saveError||'Unknown save error');
       if(saved){try{if(typeof loadCRMData==='function')await loadCRMData();if(typeof render==='function'&&typeof currentPage!=='undefined'&&currentPage==='viewings')render();}catch(e){}}
