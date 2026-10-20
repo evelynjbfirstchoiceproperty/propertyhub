@@ -2084,12 +2084,28 @@ commissionPage=function(){
 
   async function ephSubmitViewingViaBridge(payload){
     if(!EPH_DRIVE_PHOTO_API_URL)throw new Error('Bridge URL is not configured');
-    const frameName='ephViewingBridgeFrame_'+Date.now();const iframe=document.createElement('iframe');iframe.name=frameName;iframe.style.display='none';document.body.appendChild(iframe);
+    const frameName='ephViewingBridgeFrame_'+Date.now();
+    const iframe=document.createElement('iframe');iframe.name=frameName;iframe.style.display='none';document.body.appendChild(iframe);
     const form=document.createElement('form');form.method='POST';form.action=EPH_DRIVE_PHOTO_API_URL;form.target=frameName;form.style.display='none';
-    const input=document.createElement('input');input.type='hidden';input.name='payload';input.value=JSON.stringify(payload);form.appendChild(input);document.body.appendChild(form);form.submit();form.remove();
-    await new Promise(resolve=>setTimeout(resolve,1800));
-    try{for(let i=0;i<3;i++){const check=await ephBridgeJsonp({action:'check',id:payload.id},3500);if(check&&check.ok&&check.exists){setTimeout(()=>iframe.remove(),500);return true;}await new Promise(resolve=>setTimeout(resolve,500));}}catch(e){console.warn('Viewing bridge confirmation unavailable after POST; treating the bridge POST as submitted.',e);}
-    setTimeout(()=>iframe.remove(),1000);return true;
+    const input=document.createElement('input');input.type='hidden';input.name='payload';input.value=JSON.stringify(payload);form.appendChild(input);document.body.appendChild(form);
+    try{
+      form.submit();
+    }catch(e){form.remove();iframe.remove();throw new Error('Bridge POST failed: '+(e&&e.message?e.message:String(e)));}
+    form.remove();
+    let lastError='';
+    try{
+      // A POST being sent is NOT proof of persistence. Only the bridge's read-after-write
+      // check may report success; this check must confirm the same ID exists in Supabase.
+      for(let i=0;i<10;i++){
+        await new Promise(resolve=>setTimeout(resolve,1200));
+        try{
+          const check=await ephBridgeJsonp({action:'check',id:payload.id},7000);
+          if(check&&check.ok===true&&check.exists===true)return true;
+          lastError=(check&&check.message)||'Supabase has not confirmed this viewing ID yet.';
+        }catch(e){lastError=e&&e.message?e.message:String(e);}
+      }
+    }finally{setTimeout(()=>iframe.remove(),1000);}
+    throw new Error('Supabase did not confirm saved record '+payload.id+'. '+(lastError||'No confirmation received.'));
   }
   function openViewingModal(key){
     const x=(ephPublicAllListings||[]).find(y=>String(y._key)===String(key));if(!x)return;
@@ -2100,18 +2116,30 @@ commissionPage=function(){
       const whatsapp=(typeof EPH_PROFILE_DEFAULT!=='undefined'&&EPH_PROFILE_DEFAULT.whatsapp)?String(EPH_PROFILE_DEFAULT.whatsapp).replace(/\D/g,''):'601153922261';
       const wa=window.open('about:blank','_blank');status.textContent='Saving your viewing request…';
       const payload={id:'VW-CUST-'+Date.now(),date,time,person:name,phone,ref,kindLabel:'Customer View Appointment',kind:'viewing',property,status:'Pending',remark,source:'Customer View',created_at:now,updated_at:now,customerName:name,customerPhone:phone,listingReference:ref,preferredDate:date,preferredTime:time,listingCategory:txt(x.cat),listingSource:txt(x.source),listingId:txt(x._id),listingTable:txt(x._table),listingLocation:location,listingPrice:price};
-      let saved=false,saveError='',directError='';
-      // Customer View is public. Use the existing Apps Script bridge first so
-      // mobile browsers do not depend on an anon INSERT policy on crm_records.
-      if(EPH_DRIVE_PHOTO_API_URL){try{saved=await ephSubmitViewingViaBridge(payload);}catch(err){saveError=err&&err.message?err.message:String(err);}}
+      let saved=false,saveError='',bridgeError='',directError='';
+      // Customer View is public: use the trusted Apps Script bridge first so the anon key
+      // is not relied on for INSERT permission. Success requires a read-after-write check.
+      if(EPH_DRIVE_PHOTO_API_URL){
+        try{saved=await ephSubmitViewingViaBridge(payload);}
+        catch(err){bridgeError=err&&err.message?err.message:String(err);}
+      }else{bridgeError='Google Apps Script bridge URL is not configured.';}
+      // Secondary attempt only. Even a successful HTTP response is not enough unless Supabase
+      // returns the inserted row; RLS errors and empty responses must remain failures.
       if(!saved){
         try{
           const response=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records',{method:'POST',headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({id:payload.id,kind:'viewing',data:payload,updated_at:now})});
-          if(!response.ok){const body=await response.text();throw new Error('Supabase HTTP '+response.status+': '+body.slice(0,260));}
+          const body=await response.text();
+          if(!response.ok)throw new Error('Supabase HTTP '+response.status+': '+body.slice(0,260));
+          let rows=[];try{rows=body?JSON.parse(body):[];}catch(e){}
+          if(!Array.isArray(rows)||!rows.some(row=>String(row.id)===String(payload.id)&&String(row.kind)==='viewing'))throw new Error('Supabase did not return the inserted viewing row '+payload.id+'.');
+          // Verify persistence by querying the exact ID before reporting success.
+          const verify=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records?select=id,kind&id=eq.'+encodeURIComponent(payload.id)+'&kind=eq.viewing&limit=1',{headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY}});
+          const verifyBody=await verify.text();let verified=[];try{verified=verifyBody?JSON.parse(verifyBody):[];}catch(e){}
+          if(!verify.ok||!Array.isArray(verified)||!verified.some(row=>String(row.id)===String(payload.id)))throw new Error('Supabase read-after-write verification failed for '+payload.id+'. '+verifyBody.slice(0,180));
           saved=true;
         }catch(err){directError=err&&err.message?err.message:String(err);}
       }
-      if(!saved)saveError=[directError,saveError].filter(Boolean).join(' | ');
+      if(!saved)saveError=[bridgeError,directError].filter(Boolean).join(' | ');
       const waUrl='https://wa.me/'+whatsapp+'?text='+encodeURIComponent(message);if(wa){try{wa.location.href=waUrl;}catch(e){window.open(waUrl,'_blank','noopener');}}else window.open(waUrl,'_blank','noopener');
       status.textContent=saved?'Request saved to CRM and WhatsApp message opened. Your viewing is pending confirmation.':'WhatsApp message opened, but CRM save failed. Supabase/bridge error: '+(saveError||'Unknown save error');
       if(saved){try{if(typeof loadCRMData==='function')await loadCRMData();if(typeof render==='function'&&typeof currentPage!=='undefined'&&currentPage==='viewings')render();}catch(e){}}
