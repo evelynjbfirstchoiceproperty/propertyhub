@@ -779,7 +779,7 @@ function ephExtractDriveFolderId(value){const s=String(value||'').trim();if(!s||
 function ephLoadDrivePhotos(folderUrl){return new Promise(resolve=>{const folderId=ephExtractDriveFolderId(folderUrl);if(!folderId||!EPH_DRIVE_PHOTO_API_URL){resolve([]);return;}if(EPH_DRIVE_PHOTO_CACHE.has(folderId)){resolve(EPH_DRIVE_PHOTO_CACHE.get(folderId));return;}const callback='ephDriveJsonp_'+Math.random().toString(36).slice(2);let done=false;const cleanup=()=>{try{delete window[callback]}catch(e){}if(script.parentNode)script.parentNode.removeChild(script);};const finish=photos=>{if(done)return;done=true;clearTimeout(timer);cleanup();const clean=Array.isArray(photos)?photos.filter(p=>p&&p.url).sort((a,b)=>String(a.fileName||a.name||'').localeCompare(String(b.fileName||b.name||''),undefined,{numeric:true,sensitivity:'base'})).slice(0,5).map(p=>p.url):[];EPH_DRIVE_PHOTO_CACHE.set(folderId,clean);resolve(clean);};window[callback]=data=>finish(data&&data.ok?data.photos:[]);const script=document.createElement('script');script.src=EPH_DRIVE_PHOTO_API_URL+(EPH_DRIVE_PHOTO_API_URL.includes('?')?'&':'?')+'folderId='+encodeURIComponent(folderId)+'&callback='+encodeURIComponent(callback);script.onerror=()=>finish([]);const timer=setTimeout(()=>finish([]),12000);document.head.appendChild(script);});}
 async function ephHydrateDrivePhotos(items){let changed=false;await Promise.all(items.filter(x=>x.photoFolder&&!(x.photos||[]).length).map(async x=>{const photos=await ephLoadDrivePhotos(x.photoFolder);if(photos.length){x.photos=photos;x.photo=photos[0];changed=true;}}));if(changed)ephRenderAllPublicListingGroups();}
 const EPH_FORM_PREFILL_ENTRY_IDS={listingReference:['409758116','1926053645','1505875767'],requestType:'',preferredDate:'',preferredTime:''};
-function ephBridgeJsonp(params,timeoutMs=12000){return new Promise((resolve,reject)=>{if(!EPH_DRIVE_PHOTO_API_URL){reject(new Error('Google Apps Script bridge URL is not configured yet.'));return;}const cb='ephBridgeCb_'+Math.random().toString(36).slice(2);const script=document.createElement('script');let done=false;const finish=(err,data)=>{if(done)return;done=true;clearTimeout(timer);try{delete window[cb]}catch(e){}script.remove();err?reject(err):resolve(data)};window[cb]=data=>finish(null,data);script.onerror=()=>finish(new Error('Google Apps Script bridge could not be reached.'));const q=new URLSearchParams({...params,callback:cb});script.src=EPH_DRIVE_PHOTO_API_URL+(EPH_DRIVE_PHOTO_API_URL.includes('?')?'&':'?')+q.toString();const timer=setTimeout(()=>finish(new Error('Google Apps Script bridge timed out.')),timeoutMs);document.head.appendChild(script);});}
+function ephBridgeJsonp(params,timeoutMs=12000){return new Promise((resolve,reject)=>{if(!EPH_DRIVE_PHOTO_API_URL){reject(new Error('Google Apps Script bridge URL is not configured yet.'));return;}const cb='ephBridgeCb_'+Math.random().toString(36).slice(2);const script=document.createElement('script');let done=false;const finish=(err,data)=>{if(done)return;done=true;clearTimeout(timer);try{delete window[cb]}catch(e){}script.remove();err?reject(err):resolve(data)};window[cb]=data=>finish(null,data);script.onerror=()=>finish(new Error('Google Apps Script bridge could not be reached.'));const q=new URLSearchParams();Object.keys(params||{}).forEach(k=>{const v=params[k];if(v!==undefined&&v!==null)q.set(k,String(v).trim());});q.set('callback',cb);if(String(params&&params.action||'').toLowerCase()==='check'){const checkId=String(params&&params.id||'').trim();if(!/^VW-CUST-[0-9]+$/.test(checkId)){finish(new Error('Invalid viewing ID generated in Customer View: '+(checkId||'(empty)')));return;}q.set('id',checkId);}const base=String(EPH_DRIVE_PHOTO_API_URL);script.src=base+(base.includes('?')?'&':'?')+q.toString();const timer=setTimeout(()=>finish(new Error('Google Apps Script bridge timed out.')),timeoutMs);document.head.appendChild(script);});}
 function ephOpenListingForm(key,requestType){const x=(ephPublicAllListings||[]).find(y=>String(y._key)===String(key));if(!x){alert('This listing could not be found. Please refresh Customer View and try again.');return;}const base='https://docs.google.com/forms/d/e/1FAIpQLScVa1dLYI3UE_mZual2X1cetQZI93WNoLvnNQiAnICXjeyXhw/viewform';const params=new URLSearchParams({usp:'pp_url'});let canPrefill=false;const add=(field,value)=>{const configured=EPH_FORM_PREFILL_ENTRY_IDS[field];const ids=Array.isArray(configured)?configured:[configured];ids.filter(id=>id&&String(id).trim()).forEach(id=>{params.set('entry.'+String(id).replace(/^entry\./,''),String(value??''));canPrefill=true;});};add('listingReference',x.ref);add('requestType',requestType);const url=base+'?'+params.toString();window.open(url,'_blank','noopener');if(!canPrefill)alert('Google Form opened. Listing Reference: '+x.ref+' ('+x.name+'). Automatic prefill is not configured.');}
 /* Public Story / Video Story carousel backed by site_videos. Multiple posts use previous/next navigation. */
 function ephVideoUrl(row){return String(row.video_url||row.url||row.media_url||row.video||row.file_url||row.link||row.data?.url||row.data?.video_url||'').trim();}
@@ -2139,6 +2139,8 @@ commissionPage=function(){
 
   async function ephSubmitViewingViaBridge(payload){
     if(!EPH_DRIVE_PHOTO_API_URL)throw new Error('Bridge URL is not configured');
+    payload.id=String(payload&&payload.id||'').trim();
+    if(!/^VW-CUST-[0-9]+$/.test(payload.id))throw new Error('Invalid viewing ID generated by Customer View; request was not submitted.');
     // iOS Safari can complete the cross-origin form POST while the first JSONP check
     // is still following Google's redirect. Re-post the same ID once (server uses
     // merge-duplicates) and verify again; this is idempotent and avoids duplicate rows.
@@ -2157,7 +2159,7 @@ commissionPage=function(){
       for(let i=0;i<count;i++){
         await new Promise(resolve=>setTimeout(resolve,Math.min(1000+ i*150,2200)));
         try{
-          const check=await ephBridgeJsonp({action:'check',id:payload.id},3500);
+          const check=await ephBridgeJsonp({action:'check',id:payload.id},9000);
           if(check&&check.ok&&check.exists)return true;
           if(check&&!check.ok&&check.error)lastCheckError=String(check.error);
         }catch(checkErr){lastCheckError=String(checkErr&&checkErr.message||checkErr);}
@@ -2165,52 +2167,42 @@ commissionPage=function(){
       return false;
     };
     await postToBridge();
-    if(await verify(4))return true;
+    if(await verify(10))return true;
     // Retry the same request ID. The Apps Script bridge uses Supabase upsert, so
     // this does not create a second appointment if the first POST actually succeeded.
     await postToBridge();
-    if(await verify(4))return true;
+    if(await verify(8))return true;
     throw new Error('The appointment bridge could not confirm this request. Do not submit it again yet; check the Admin Viewing list first. '+(lastCheckError?'Last check: '+lastCheckError:''));
   }
   function openViewingModal(key){
     const x=(ephPublicAllListings||[]).find(y=>String(y._key)===String(key));if(!x)return;
     let back=document.getElementById('ephCustomerViewingModal');
-    if(!back){back=document.createElement('div');back.id='ephCustomerViewingModal';back.className='modal-backdrop';back.style.zIndex='10050';back.innerHTML=`<div class="modal" style="max-width:620px;width:min(620px,96vw)"><div class="modal-head"><h3>Request a Viewing</h3><button type="button" class="btn small" id="ephViewingClose">✕</button></div><div class="modal-content"><p class="muted" style="margin-top:0">Submit your preferred time. Your request is saved to the CRM and sent to Evelyn by WhatsApp; viewing remains pending until confirmed.</p><form id="ephCustomerViewingForm"><div class="form-grid"><div class="form-group full"><label>Listing Reference</label><input class="field" id="ephViewingRef" readonly></div><div class="form-group full"><label>Property</label><input class="field" id="ephViewingProperty" readonly></div><div class="form-group"><label>Your Name *</label><input class="field" id="ephViewingName" required autocomplete="name"></div><div class="form-group"><label>Phone / WhatsApp *</label><input class="field" id="ephViewingPhone" required autocomplete="tel" inputmode="tel"></div><div class="form-group"><label>Preferred Date *</label><input class="field" id="ephViewingDate" type="date" required></div><div class="form-group"><label>Preferred Time *</label><input class="field" id="ephViewingTime" type="time" required></div><div class="form-group full"><label>Message (optional)</label><textarea class="field" id="ephViewingRemark" rows="3" placeholder="How many people will attend, or other notes"></textarea></div></div><div id="ephViewingStatus" class="muted" aria-live="polite" style="margin:10px 0"></div><div class="actions"><button class="btn gold" type="submit">Submit Viewing Request & WhatsApp</button><button class="btn" type="button" id="ephViewingCancel">Cancel</button></div></form></div></div>`;document.body.appendChild(back);const close=()=>back.classList.remove('show');back.querySelector('#ephViewingClose').addEventListener('click',close);back.querySelector('#ephViewingCancel').addEventListener('click',close);back.addEventListener('click',e=>{if(e.target===back)close();});back.querySelector('#ephCustomerViewingForm').addEventListener('submit',async ev=>{
-      ev.preventDefault();
-      const form=ev.currentTarget;
-      if(form.dataset.submitting==='1')return;
-      const status=back.querySelector('#ephViewingStatus');
-      const submitBtn=form.querySelector('button[type="submit"]');
-      const name=txt(back.querySelector('#ephViewingName').value),phone=txt(back.querySelector('#ephViewingPhone').value),date=txt(back.querySelector('#ephViewingDate').value),time=txt(back.querySelector('#ephViewingTime').value),remark=txt(back.querySelector('#ephViewingRemark').value);
-      if(!name||!phone||!date||!time){status.textContent='Please complete name, phone, preferred date and time.';return;}
+    if(!back){back=document.createElement('div');back.id='ephCustomerViewingModal';back.className='modal-backdrop';back.style.zIndex='10050';back.innerHTML=`<div class="modal" style="max-width:620px;width:min(620px,96vw)"><div class="modal-head"><h3>Request a Viewing</h3><button type="button" class="btn small" id="ephViewingClose">✕</button></div><div class="modal-content"><p class="muted" style="margin-top:0">Submit your preferred time. Your request is saved to the CRM and sent to Evelyn by WhatsApp; viewing remains pending until confirmed.</p><form id="ephCustomerViewingForm"><div class="form-grid"><div class="form-group full"><label>Listing Reference</label><input class="field" id="ephViewingRef" readonly></div><div class="form-group full"><label>Property</label><input class="field" id="ephViewingProperty" readonly></div><div class="form-group"><label>Your Name *</label><input class="field" id="ephViewingName" required autocomplete="name"></div><div class="form-group"><label>Phone / WhatsApp *</label><input class="field" id="ephViewingPhone" required autocomplete="tel" inputmode="tel"></div><div class="form-group"><label>Preferred Date *</label><input class="field" id="ephViewingDate" type="date" required></div><div class="form-group"><label>Preferred Time *</label><input class="field" id="ephViewingTime" type="time" required></div><div class="form-group full"><label>Message (optional)</label><textarea class="field" id="ephViewingRemark" rows="3" placeholder="How many people will attend, or other notes"></textarea></div></div><div id="ephViewingStatus" class="muted" aria-live="polite" style="margin:10px 0"></div><div class="actions"><button class="btn gold" type="submit">Submit Viewing Request & WhatsApp</button><button class="btn" type="button" id="ephViewingCancel">Cancel</button></div></form></div></div>`;document.body.appendChild(back);const close=()=>back.classList.remove('show');back.querySelector('#ephViewingClose').addEventListener('click',close);back.querySelector('#ephViewingCancel').addEventListener('click',close);back.addEventListener('click',e=>{if(e.target===back)close();});back.querySelector('#ephCustomerViewingForm').addEventListener('submit',async ev=>{ev.preventDefault();const status=back.querySelector('#ephViewingStatus');const name=txt(back.querySelector('#ephViewingName').value),phone=txt(back.querySelector('#ephViewingPhone').value),date=txt(back.querySelector('#ephViewingDate').value),time=txt(back.querySelector('#ephViewingTime').value),remark=txt(back.querySelector('#ephViewingRemark').value);if(!name||!phone||!date||!time){status.textContent='Please complete name, phone, preferred date and time.';return;}
       const ref=txt(back.querySelector('#ephViewingRef').value),property=txt(back.querySelector('#ephViewingProperty').value),location=txt(x.location),price=txt(x.price),now=new Date().toISOString();
       const message=['Viewing Appointment Request','Listing Reference: '+ref,'Property: '+property,'Location: '+(location||'—'),'Price: '+(price||'—'),'Customer: '+name,'Phone: '+phone,'Preferred Viewing: '+date+' '+time,'Message: '+(remark||'—'),'Please contact me to confirm the viewing.'].join('\n');
       const whatsapp=(typeof EPH_PROFILE_DEFAULT!=='undefined'&&EPH_PROFILE_DEFAULT.whatsapp)?String(EPH_PROFILE_DEFAULT.whatsapp).replace(/\D/g,''):'601153922261';
-      const waUrl='https://wa.me/'+whatsapp+'?text='+encodeURIComponent(message);
-      // Navigate the user-gesture-opened WhatsApp tab immediately; do not wait for the CRM network round-trip.
-      let wa=null;try{wa=window.open('about:blank','_blank');if(wa)wa.location.href=waUrl;}catch(e){}
-      if(!wa){try{window.open(waUrl,'_blank','noopener');}catch(e){}}
-      form.dataset.submitting='1';if(submitBtn){submitBtn.disabled=true;submitBtn.textContent='Saving…';}
-      status.textContent='Sending your viewing request… WhatsApp is opening separately.';
-      const payload={id:'VW-CUST-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),date,time,person:name,phone,ref,kindLabel:'Customer View Appointment',kind:'viewing',property,status:'Pending',remark,source:'Customer View',created_at:now,updated_at:now,customerName:name,customerPhone:phone,listingReference:ref,preferredDate:date,preferredTime:time,listingCategory:txt(x.cat),listingSource:txt(x.source),listingId:txt(x._id),listingTable:txt(x._table),listingLocation:location,listingPrice:price};
+      const wa=window.open('about:blank','_blank');status.textContent='Saving your viewing request…';
+      const payload={id:'VW-CUST-'+Date.now(),date,time,person:name,phone,ref,kindLabel:'Customer View Appointment',kind:'viewing',property,status:'Pending',remark,source:'Customer View',created_at:now,updated_at:now,customerName:name,customerPhone:phone,listingReference:ref,preferredDate:date,preferredTime:time,listingCategory:txt(x.cat),listingSource:txt(x.source),listingId:txt(x._id),listingTable:txt(x._table),listingLocation:location,listingPrice:price};
       let saved=false,saveError='',directError='';
+      // Mobile-safe path: submit through the server-side bridge first, then require its
+      // check action to confirm the exact ID exists in Supabase. Never infer success from POST alone.
       if(EPH_DRIVE_PHOTO_API_URL){try{saved=await ephSubmitViewingViaBridge(payload);}catch(err){saveError=err&&err.message?err.message:String(err);}}
+      // Do not fall back to browser-side Supabase writes when the bridge is configured.
+      // The public anon key is blocked by crm_records RLS; attempting REST here only
+      // adds a misleading 401 after the bridge may already have saved the appointment.
+      // A direct REST fallback is retained only for an intentionally unconfigured bridge.
       if(!saved&&!EPH_DRIVE_PHOTO_API_URL){try{
         const response=await fetch(EPH_SUPABASE_URL+'/rest/v1/crm_records',{method:'POST',headers:{apikey:EPH_SUPABASE_KEY,Authorization:'Bearer '+EPH_SUPABASE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify({id:payload.id,kind:'viewing',data:payload,updated_at:now})});
         if(!response.ok){const body=await response.text();throw new Error('Supabase HTTP '+response.status+': '+body.slice(0,260));}
-        const rows=await response.json();if(!Array.isArray(rows)||!rows.some(row=>String(row.id)===String(payload.id)))throw new Error('Supabase did not return the saved viewing record.');saved=true;
+        const rows=await response.json();
+        if(!Array.isArray(rows)||!rows.some(row=>String(row.id)===String(payload.id)))throw new Error('Supabase did not return the saved viewing record.');
+        saved=true;
       }catch(err){directError=err&&err.message?err.message:String(err);}}
       if(!saved)saveError=[saveError,directError].filter(Boolean).join(' | ');
-      if(saved){
-        status.textContent='Request saved successfully. WhatsApp has been opened; Evelyn will confirm the viewing.';
-        try{form.reset();}catch(e){}
-        try{if(typeof loadCRMData==='function')await loadCRMData();if(typeof render==='function'&&typeof currentPage!=='undefined'&&currentPage==='viewings')render();}catch(e){}
-        // Close the customer form automatically after a confirmed save (no Cancel click needed).
-        setTimeout(()=>{back.classList.remove('show');form.dataset.submitting='';if(submitBtn){submitBtn.disabled=false;submitBtn.textContent='Submit Viewing Request & WhatsApp';}},700);
-      }else{
-        status.textContent=(EPH_DRIVE_PHOTO_API_URL?'WhatsApp was opened, but CRM confirmation is still pending. Check Admin Viewing before submitting again. ':'WhatsApp was opened, but the CRM save failed. ')+(saveError||'No server confirmation was received.');
-        form.dataset.submitting='';if(submitBtn){submitBtn.disabled=false;submitBtn.textContent='Retry Viewing Request';}
-      }
+      if(!saved&&!saveError)saveError=directError||'No server confirmation was received.';
+      const waUrl='https://wa.me/'+whatsapp+'?text='+encodeURIComponent(message);if(wa){try{wa.location.href=waUrl;}catch(e){window.open(waUrl,'_blank','noopener');}}else window.open(waUrl,'_blank','noopener');
+      status.textContent=saved?'Request saved to CRM and WhatsApp message opened. Your viewing is pending confirmation.':(EPH_DRIVE_PHOTO_API_URL?'WhatsApp message opened. The CRM bridge could not confirm the save yet. Please check Admin Viewing before trying again. Details: ':'WhatsApp message opened, but CRM save failed. Supabase/bridge error: ')+(saveError||'Unknown save error');
+      if(saved){try{if(typeof loadCRMData==='function')await loadCRMData();if(typeof render==='function'&&typeof currentPage!=='undefined'&&currentPage==='viewings')render();}catch(e){}}
     });}
     back.querySelector('#ephViewingRef').value=txt(x.ref);back.querySelector('#ephViewingProperty').value=txt(x.name);back.querySelector('#ephViewingDate').min=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kuala_Lumpur',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());back.querySelector('#ephViewingStatus').textContent='';back.classList.add('show');
   }
