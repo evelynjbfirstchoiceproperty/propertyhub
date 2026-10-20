@@ -3420,6 +3420,41 @@ function ephCommissionDashboardStats(){
 })();
 </script>
 <!-- EPH fix 2026-10-20: Angeline Ong must remain AB002; legacy AGBK002-linked agreement reminders are excluded from visible tracker/queues. No cloud data was deleted by this HTML patch. -->
+
+<script id="eph-admin-login-load-agent-database-before-dashboard-20261020">
+(function(){
+  'use strict';
+  if(window.__ephAdminAutoLoadAgentPatchInstalled)return;
+  window.__ephAdminAutoLoadAgentPatchInstalled=true;
+  const originalLoad=window.loadCRMData;
+  if(typeof originalLoad!=='function'){
+    console.warn('EPH admin preload patch: loadCRMData not found; normal CRM loader retained.');
+    return;
+  }
+  window.loadCRMData=async function(){
+    const result=await originalLoad.apply(this,arguments);
+    const session=window.EPH_ADMIN_SESSION;
+    const token=session&&session.access_token;
+    if(!token)return result;
+    // Run the canonical Agent Database sync once on the first CRM load of each
+    // authenticated session, instead of waiting for the user to click Agents.
+    if(window.__ephAgentInitialLoginSyncToken!==token && typeof window.ephAgentAuthoritativeSync==='function'){
+      window.__ephAgentInitialLoginSyncToken=token;
+      try{
+        await window.ephAgentAuthoritativeSync();
+      }catch(error){
+        // Permit retry on a later explicit refresh if the initial sync failed.
+        window.__ephAgentInitialLoginSyncToken=null;
+        console.warn('EPH automatic Agent Database preload failed:',error&&error.message||error);
+        if(typeof window.toast==='function')window.toast('Agent Database automatic sync failed: '+(error&&error.message||error),true);
+      }
+    }
+    if(typeof window.render==='function')window.render();
+    return result;
+  };
+})();
+</script>
+
 </body></html>
 
 <script id="eph-customer-leads-dedupe-display-20261016">
