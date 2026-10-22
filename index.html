@@ -1390,9 +1390,11 @@ async function ephEditOwnerForListing(ref){
   }
   clean._dbid=savedRow.id;clean._sourceTable='crm_records';
   try{await ephSaveAgentAttachment(clean,upload);}catch(fileErr){secondaryErrors.push('Attachment: '+(fileErr.message||fileErr));}
-  // Persist an idempotent Agent-linked SPA/Tenancy tracker record. The row is explicitly
-  // marked as an Agent agreement tracker entry; it is not represented as signed unless status says so.
-  try{
+  // An Agent-profile file upload is an attachment, not a new SPA/Tenancy Reminder.
+  // Only create/update a tracker row when actual agreement metadata exists; file-only uploads stay on the Agent profile.
+  const agreementStatusMeta=String(clean.contractStatus||clean.latestAgreementStatus||'').trim();
+  const hasAgreementMetadata=!!(String(clean.linkedAgreementId||'').trim() || String(clean.contractStartDate||'').trim() || String(clean.contractEndDate||'').trim() || (agreementStatusMeta && !/^other\s*\/\s*blank$/i.test(agreementStatusMeta)) || String(clean.contractDocumentUrl||'').trim());
+  if(hasAgreementMetadata) try{
     const agreementKind=String(clean.contractKind||'SPA').trim()==='Tenancy Agreement'?'Tenancy Agreement':'SPA';
     const agreementStatus=String(clean.contractStatus||clean.latestAgreementStatus||'Other / Blank').trim()||'Other / Blank';
     const linkedId=String(clean.linkedAgreementId||'').trim();
@@ -1811,7 +1813,7 @@ commissionPage=function(){
           phone:String(phone), email:row.email||row['Email Address']||'', specialty:row.requirement_type||row.requirementType||row.property_type||row['Requirement Type']||'',
           requirementType:row.client_requirement||'', listingRef:row.listing_reference||'',
           location:row.location||'', budget:row.budget||'', status:row.status||'New',
-          source:'Google Form', requirements:1, commissionTerms:row.commission_terms||'',
+          source:(/google|form/i.test(String(row.source||row._source||row.data_source||''))||row.form_response_id||row.formResponseId||row.response_id||row.responseId||/^AGBK\d+$/i.test(code))?'Google Form':'Manual', requirements:1, commissionTerms:row.commission_terms||'',
           commissionRemark:row.remark||row.commission_remark||'', created_at:row.created_at||row.submitted_at||'', updated_at:row.updated_at||row.created_at||''
         });
         seen.add(key);
@@ -1948,27 +1950,52 @@ commissionPage=function(){
  const phoneKey=v=>txt(v).replace(/\D/g,'');
  const recordStamp=r=>{const n=Date.parse(r.created_at||r.createdAt||r.submitted_at||r.timestamp||r.updated_at||r.updated||'');return Number.isFinite(n)?n:0;};
  const numericCode=(code,prefix)=>Number(String(code||'').slice(prefix.length))||0;
- function googleAgent(a){return /google|form/i.test(txt(a.source||a._source||a.data_source))||/^agent_form_/i.test(txt(a._dbid||a.id))||txt(a._sourceTable)==='crm_cobroke_requests'||txt(a._kind)==='crm_cobroke_requests';}
+ function googleAgent(a){return /google|form/i.test(txt(a.source||a._source||a.data_source))||/^agent_form_/i.test(txt(a._dbid||a.id))||/^(AGBK)\d+$/i.test(txt(a.agent_code||a.agentCode||a.displayCode||a.display_code))||txt(a.form_response_id||a.formResponseId||a.response_id||a.responseId);}
  function normalizeAgentCodes(){
    if(!Array.isArray(agents))return;
-   const arr=agents;
-   const ordered=arr.slice().sort((a,b)=>recordStamp(a)-recordStamp(b)||txt(a._dbid||a.id).localeCompare(txt(b._dbid||b.id),undefined,{numeric:true}));
+   const txtNorm=v=>txt(v).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+   const phoneIdentity=v=>{const raw=txt(v).toLowerCase();const digits=raw.replace(/\D/g,'');return digits?('digits:'+digits):raw?('handle:'+txtNorm(raw)):'';};
+   // First collapse duplicate rows representing the same person. Prefer the permanent manual AB row;
+   // otherwise preserve the earliest valid existing ID. This changes only the in-memory display list.
+   const source=agents.slice(), groups=new Map();
+   source.forEach((a,i)=>{
+     const name=txtNorm(a.name||a.agent_name||a.agentName), agency=txtNorm(a.company||a.agency), ph=phoneIdentity(a.phone||a.mobile||a.agent_phone);
+     if(!name)return;
+     // Only merge exact same person + agency + contact. If there is no contact, require same name+agency.
+     const key=ph ? (name+'|'+ph) : (name+'|agency:'+agency+'|no-contact');
+     if(!groups.has(key))groups.set(key,[]);groups.get(key).push({a,i});
+   });
+   const removed=new Set();
+   for(const group of groups.values()){
+     if(group.length<2)continue;
+     group.sort((x,y)=>{
+       const cx=txt(x.a.displayCode||x.a.display_code||x.a.agentCode||x.a.agent_code||x.a.id).toUpperCase();
+       const cy=txt(y.a.displayCode||y.a.display_code||y.a.agentCode||y.a.agent_code||y.a.id).toUpperCase();
+       const mx=/^AB\d+$/.test(cx)?1:0,my=/^AB\d+$/.test(cy)?1:0;if(mx!==my)return my-mx;
+       const sx=Object.entries(x.a||{}).filter(([k,v])=>!k.startsWith('_')&&v!==''&&v!=null).length;
+       const sy=Object.entries(y.a||{}).filter(([k,v])=>!k.startsWith('_')&&v!==''&&v!=null).length;
+       if(sx!==sy)return sy-sx;
+       const tx=recordStamp(x.a),ty=recordStamp(y.a);if(tx!==ty)return tx-ty;
+       return x.i-y.i;
+     });
+     group.slice(1).forEach(x=>removed.add(x.i));
+   }
+   if(removed.size)agents=source.filter((_,i)=>!removed.has(i));
    const used={AGBK:new Set(),AB:new Set()},max={AGBK:0,AB:0};
-   // Keep a unique existing code. If several rows have the same code, the earliest keeps it.
-   ordered.forEach(a=>{
-     const raw=txt(a.displayCode||a.display_code||a.agentCode||a.agent_code||a._eph_customer_id||a.customer_id||a.customerCode||a.customer_code||a.id).toUpperCase();
-     const m=raw.match(/^(AGBK|AB)(\d+)$/); if(!m)return;
+   // Preserve every valid existing code exactly. Never renumber a valid AB/AGBK ID during load/render.
+   agents.forEach(a=>{
+     const raw=txt([a.id,a._eph_customer_id,a.customer_id,a.customerCode,a.customer_code,a.agent_code,a.agentCode,a.displayCode,a.display_code].find(v=>/^AB\d+$/i.test(txt(v)))||[a.id,a._eph_customer_id,a.customer_id,a.customerCode,a.customer_code,a.agent_code,a.agentCode,a.displayCode,a.display_code].find(v=>/^AGBK\d+$/i.test(txt(v)))||a.displayCode||a.display_code||a.agentCode||a.agent_code||a.id).toUpperCase();
+     const m=raw.match(/^(AGBK|AB)(\d+)$/);if(!m)return;
      const prefix=m[1],n=Number(m[2]);
      if(!used[prefix].has(n)){used[prefix].add(n);max[prefix]=Math.max(max[prefix],n);a.displayCode=prefix+String(n).padStart(3,'0');}
-     else {a.__ephDuplicateCode=true;}
    });
-   ordered.forEach(a=>{
-     if(!a.__ephDuplicateCode && /^(AGBK|AB)\d+$/.test(txt(a.displayCode)))return;
-     const prefix=googleAgent(a)?'AGBK':'AB';
-     do{max[prefix]++;}while(used[prefix].has(max[prefix]));
+   // Assign IDs only to records with no valid existing ID; AB010 stays AB010 even if old metadata says Google Form.
+   agents.forEach(a=>{
+     const raw=txt([a.id,a._eph_customer_id,a.customer_id,a.customerCode,a.customer_code,a.agent_code,a.agentCode,a.displayCode,a.display_code].find(v=>/^AB\d+$/i.test(txt(v)))||[a.id,a._eph_customer_id,a.customer_id,a.customerCode,a.customer_code,a.agent_code,a.agentCode,a.displayCode,a.display_code].find(v=>/^AGBK\d+$/i.test(txt(v)))||a.displayCode||a.display_code||a.agentCode||a.agent_code||a.id).toUpperCase();
+     if(/^(AGBK|AB)\d+$/.test(raw)){a.displayCode=raw;return;}
+     const prefix=googleAgent(a)?'AGBK':'AB';do{max[prefix]++;}while(used[prefix].has(max[prefix]));
      used[prefix].add(max[prefix]);a.displayCode=prefix+String(max[prefix]).padStart(3,'0');
      if(!a.source)a.source=prefix==='AGBK'?'Google Form':'Manual';
-     delete a.__ephDuplicateCode;
    });
  }
  const priorRender=render;
@@ -2278,7 +2305,7 @@ commissionPage=function(){
       const phone=txt(pick(objs,['phone','mobile','agentPhone','agent_phone','Agent WhatsApp / Phone Number','WhatsApp / Phone Number','Phone Number','Phone / WhatsApp Number']));
       const clearlyAgent=/agent|broker|经纪/.test(role)||/^(AGBK|AB)\d+$/.test(code)||!!(name&&phone&&/agent|broker|company|agency/i.test(Object.keys(row.data||row).join(' ')));
       if(sourceTable==='crm_cobroke_requests' || clearlyAgent){
-        const candidate=normalizeAgent({...row,_dbid:row.id,_sourceTable:sourceTable,displayCode:/^(AGBK|AB)\d+$/.test(code)?code:undefined,source:sourceTable==='crm_cobroke_requests'?'Google Form':undefined});
+        const candidate=normalizeAgent({...row,_dbid:row.id,_sourceTable:sourceTable,displayCode:/^(AGBK|AB)\d+$/.test(code)?code:undefined,source:(/google|form/i.test(String(row.source||row._source||row.data_source||''))||pick(objs,['form_response_id','formResponseId','response_id','responseId'])||/^AGBK\d+$/i.test(code))?'Google Form':'Manual'});
         const key=phoneKey(candidate.phone), candidateCode=txt(candidate.displayCode||candidate.id).toUpperCase();
         let found=(window.agents||[]).find(a=>(key&&phoneKey(a.phone)===key)||(candidateCode&&/^(AGBK|AB)\d+$/.test(candidateCode)&&txt(a.displayCode||a.id).toUpperCase()===candidateCode));
         if(found){
@@ -2691,6 +2718,14 @@ function ephCommissionDashboardStats(){
   for(const r of requests){
    const candidateCode=getCode(r);const raw=mapRow(r,candidateCode||'');
    const pn=phoneKey(raw.phone);
+   // Protect permanent manual identities: never create an AGBK copy when this
+   // person already exists under an AB code. Keep the manual row and its links.
+   const nameKey=v=>txt(v).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+   // Never create a Google-Form copy of a manually-created AB identity. Match by
+   // phone when present, and by exact normalized name as a fallback for requests
+   // whose form phone is blank/differently formatted. The manual AB record wins.
+   const manualMatch=canonical.find(x=>{const d=x.data&&typeof x.data==='object'?x.data:{};if(!/^AB\d+$/i.test(getCode(d)))return false;const samePhone=pn&&phoneKey(d.phone||d.mobile)===pn;const sameName=nameKey(d.name||d.agent_name||d.full_name)===nameKey(raw.name);return !!samePhone||!!(raw.name&&sameName);});
+   if(manualMatch){skipped++;continue;}
    // Requests without a stable contact identity are left untouched for review.
    if(!pn&&!raw.name){skipped++;continue;}
    let existing=canonical.find(x=>String(x.data?.googleFormRequestId||'')===String(r.id||''));
@@ -2834,6 +2869,10 @@ function ephCommissionDashboardStats(){
       // They are not Google Form submissions and must never be imported as AGBK.
       if(/^COBROKE-/i.test(String(req&&req.id||'')))continue;
       const raw=mapCobroke(req);if(!raw.name&&!raw.phone&&!raw.email)continue;
+      // A Google Form request matching a saved manual AB agent is not a new agent.
+      // Do not copy it into AGBK and do not modify the manual AB record.
+      const manualMatch=raw.phone&&canonical.find(x=>{const d=x.data&&typeof x.data==='object'?x.data:{};return /^AB\d+$/i.test(escTxt(d.displayCode||d.id))&&phoneKey(d.phone||d.mobile)===phoneKey(raw.phone);});
+      if(manualMatch)continue;
       let row=canonical.find(x=>String(x.data?.googleFormRequestId||'')===String(req.id||''))||null;
       const sourceCode=raw.displayCode;
       if(!row&&sourceCode)row=canonical.find(x=>escTxt(x.data?.displayCode||x.data?.id).toUpperCase()===sourceCode);
@@ -3866,7 +3905,16 @@ window.addEventListener('load',()=>ephScheduleStoryExpiry());
      return (tanName && (/AGBK001/.test(code) || phone==='601143543423' || phone==='01143543423')) ||
             (tanName && String(val(r,['id','displayCode'])||'').toUpperCase().includes('AGBK001'));
    };
-   const central=(Array.isArray(leases)?leases:[]).filter(r=>!isDeletedTan(r)&&!window.ephIsWrongAngelineAGBK002(r));
+   const isAttachmentOnlyAgentRow=r=>{
+     const profile= r.agentProfileTracker===true || String(r.source_kind||'').toLowerCase()==='agent' || /^DOC-AG-/i.test(String(r.id||''));
+     if(!profile)return false;
+     const hasDates=['date','signingDate','signatureDate','expectedSigningDate','leaseStart','leaseEnd','contractStartDate','contractEndDate','expiryDate','tenancyExpiryDate'].some(k=>String(r[k]||'').trim());
+     const status=String(r.status||r.contractStatus||r.latestAgreementStatus||'').trim().toLowerCase();
+     const signedStatus=/signed|completed|pending signature|drafting/.test(status);
+     const hasCustomer=!!(r.customerDbId||r.customerId||r.customer_id||r.customerPhone||r.customerName);
+     return !hasDates&&!signedStatus&&!hasCustomer;
+   };
+   const central=(Array.isArray(leases)?leases:[]).filter(r=>!isDeletedTan(r)&&!window.ephIsWrongAngelineAGBK002(r)&&!isAttachmentOnlyAgentRow(r));
    // Use the actual Customer Lead and Agent Database arrays as the source of truth.
    // Overlay the currently open lead/agent form so status changes affect statistics
    // while typing, before Save updates the underlying array.
@@ -3888,7 +3936,7 @@ window.addEventListener('load',()=>ephScheduleStoryExpiry());
    };
    const leadList=liveSourceRows(typeof leads!=='undefined'?leads:window.leads,'lead');
    const agentList=liveSourceRows(typeof agents!=='undefined'?agents:window.agents,'agent');
-   const all=[]; const byKey=new Map(); const centralIds=new Set(central.map(r=>T(r.id||r._dbid||r.agreementId)).filter(Boolean));
+   const all=[]; const byKey=new Map(); const centralIds=new Set(central.flatMap(r=>[r.id,r._dbid,r.agreementId,r.source_record_id,r.linkedAgreementId]).map(T).filter(Boolean));
    // Build broad identities from the saved Agreement Tracker first. The tracker is
    // still part of the full-source calculation, but when Customer Leads / Agent
    // Database contain a copy of an existing agreement, the copy must not become a
@@ -3979,7 +4027,11 @@ window.addEventListener('load',()=>ephScheduleStoryExpiry());
      if(!linked){const ph=phoneKey(val(a,['phone','mobile','whatsapp','whatsappPhone']));if(ph&&leadByPhone.has(ph))linked=leadByPhone.get(ph);}
      if(!linked){const nm=norm(val(a,['name','agent_name','agentName','fullName']));if(nm&&leadByName.has(nm))linked=leadByName.get(nm);}
      const inherited=linked?kindOf(linked):kindOf(a);
-     if(!inherited || (!linked && !agreementEvidence(a)))return;
+     // A file uploaded to an Agent Database profile is an attachment to that
+     // agent, not a new SPA/Tenancy Reminder. Only promote the profile to an
+     // agreement when agreement-specific dates/status/link metadata exists.
+     const agreementSpecific=!!val(a,['linkedAgreementId','agreementId','latestAgreementId','leaseId','contractId','signingDate','signatureDate','expectedSigningDate','contractStartDate','contractEndDate','leaseEnd','expiryDate','tenancyExpiryDate','contractStatus','latestAgreementStatus','agreementStatus','agreement_status','agreementType','agreement_type','documentType','documentUrl']);
+     if(!inherited || (!linked && (!agreementEvidence(a)||!agreementSpecific)))return;
      add(merge(a,'agent',inherited));
    });
    return all.map(x=>{
@@ -4861,4 +4913,171 @@ window.addEventListener('load',()=>ephScheduleStoryExpiry());
 })();
 </script>
 
+
+<script id="eph-final-agent-and-reminder-duplicate-guard-20261023-v2">
+(function(){
+ 'use strict';
+ const clean=v=>String(v==null?'':v).trim();
+ const norm=v=>clean(v).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+ const contact=v=>{const raw=clean(v).toLowerCase();const digits=raw.replace(/\D/g,'');return digits?'digits:'+digits:raw?'handle:'+norm(raw):'';};
+ function dedupeAgentRows(){
+  if(!Array.isArray(window.agents))return;
+  const rows=window.agents.slice(),groups=new Map();
+  rows.forEach((a,i)=>{
+   const name=norm(a.name||a.agent_name||a.agentName),agency=norm(a.company||a.agency),ph=contact(a.phone||a.mobile||a.agent_phone);
+   if(!name)return;
+   const key=ph ? (name+'|'+ph) : (name+'|agency:'+agency+'|no-contact');
+   if(!groups.has(key))groups.set(key,[]);groups.get(key).push({a,i});
+  });
+  const remove=new Set();
+  groups.forEach(group=>{
+   if(group.length<2)return;
+   group.sort((x,y)=>{
+    const cx=clean([x.a.id,x.a._eph_customer_id,x.a.customer_id,x.a.customerCode,x.a.customer_code,x.a.agent_code,x.a.agentCode,x.a.displayCode,x.a.display_code].find(v=>/^AB\d+$/i.test(clean(v)))||x.a.displayCode||x.a.id).toUpperCase(),cy=clean([y.a.id,y.a._eph_customer_id,y.a.customer_id,y.a.customerCode,y.a.customer_code,y.a.agent_code,y.a.agentCode,y.a.displayCode,y.a.display_code].find(v=>/^AB\d+$/i.test(clean(v)))||y.a.displayCode||y.a.id).toUpperCase();
+    const mx=/^AB\d+$/.test(cx)?1:0,my=/^AB\d+$/.test(cy)?1:0;if(mx!==my)return my-mx;
+    const sx=Object.entries(x.a||{}).filter(([k,v])=>!k.startsWith('_')&&v!==''&&v!=null).length,sy=Object.entries(y.a||{}).filter(([k,v])=>!k.startsWith('_')&&v!==''&&v!=null).length;
+    if(sx!==sy)return sy-sx;
+    const tx=Date.parse(x.a.created_at||x.a.createdAt||'')||0,ty=Date.parse(y.a.created_at||y.a.createdAt||'')||0;
+    return tx-ty||x.i-y.i;
+   });
+   group.slice(1).forEach(x=>remove.add(x.i));
+  });
+  if(remove.size){const unique=rows.filter((_,i)=>!remove.has(i));window.agents=unique;try{agents=unique;}catch(e){}}
+ }
+ const priorLoad=window.loadCRMData;
+ if(typeof priorLoad==='function'&&!window.__ephFinalDupGuardWrapped){window.__ephFinalDupGuardWrapped=true;window.loadCRMData=async function(){const r=await priorLoad.apply(this,arguments);dedupeAgentRows();return r;};}
+ const priorRender=window.render;
+ if(typeof priorRender==='function'&&!window.__ephFinalRenderDupGuardWrapped){window.__ephFinalRenderDupGuardWrapped=true;window.render=function(){dedupeAgentRows();return priorRender.apply(this,arguments);};}
+ window.ephDedupeAgentRows=dedupeAgentRows;
+})();
+</script>
+
+<script id="eph-final-manual-cobroke-agent-numbering-20261023">
+(function(){
+ 'use strict';
+ const t=v=>String(v==null?'':v).trim();
+ const digits=v=>t(v).replace(/\D/g,'');
+ const norm=v=>t(v).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+ const phoneKey=v=>{let d=digits(v);if(d.startsWith('0060'))d=d.slice(2);if(d.startsWith('60'))return '60'+d.slice(2).replace(/^0/,'');if(d.startsWith('0'))return '60'+d.slice(1);return d;};
+ function explicitGoogle(a){
+   const s=t(a.source||a._source||a.data_source);
+   return /google|form/i.test(s)||!!(a.form_response_id||a.formResponseId||a.response_id||a.responseId)||/^agent_form_/i.test(t(a._dbid||a.id));
+ }
+ function validCode(a){
+   const vals=[a.id,a._eph_customer_id,a.customer_id,a.customerCode,a.customer_code,a.agent_code,a.agentCode,a.displayCode,a.display_code];
+   return vals.map(t).map(x=>x.toUpperCase()).find(x=>/^(AB|AGBK)\d+$/.test(x))||'';
+ }
+ function classifyManual(){
+   if(!Array.isArray(window.agents))return;
+   // crm_cobroke_requests is a storage table, not proof that a row came from Google Form.
+   // Rows without explicit Form metadata are treated as manually created Agent records.
+   window.agents.forEach(a=>{
+     const code=validCode(a), src=t(a.source||a._source||a.data_source);
+     if(t(a._sourceTable)==='crm_cobroke_requests' && !explicitGoogle(a) && !/^AGBK\d+$/i.test(code)) a.source='Manual';
+   });
+   const usedAB=new Set(), usedAG=new Set();
+   window.agents.forEach(a=>{const c=validCode(a);if(/^AB\d+$/.test(c))usedAB.add(c);if(/^AGBK\d+$/.test(c))usedAG.add(c);});
+   let nextAB=1;
+   const maxAB=Math.max(0,...Array.from(usedAB).map(c=>Number(c.slice(2))||0)); nextAB=maxAB+1;
+   // Only rows explicitly identified as Google may receive AGBK. Manual rows get AB.
+   window.agents.forEach(a=>{
+     if(t(a._sourceTable)!=='crm_cobroke_requests' || explicitGoogle(a))return;
+     const c=validCode(a);
+     if(/^AB\d+$/.test(c)){a.displayCode=c;a.id=a.id&&/^AB\d+$/.test(t(a.id))?a.id:a.id;return;}
+     if(/^AGBK\d+$/.test(c))return;
+     while(usedAB.has('AB'+String(nextAB).padStart(3,'0')))nextAB++;
+     const code='AB'+String(nextAB++).padStart(3,'0'); usedAB.add(code); a.displayCode=code;
+     // Do not overwrite a DB primary key. This is the permanent display code used by the CRM.
+     a.source='Manual';
+   });
+   // Remove duplicate display rows by exact person/contact identity; keep the row with the AB code,
+   // then the row with an explicit Google code, then the most complete/oldest row.
+   const groups=new Map();
+   window.agents.forEach((a,i)=>{
+     const name=norm(a.name||a.agent_name||a.agentName), ph=phoneKey(a.phone||a.mobile||a.agent_phone);
+     if(!name && !ph)return;
+     const key=(name||'')+'|'+(ph||'');
+     if(!groups.has(key))groups.set(key,[]);groups.get(key).push({a,i});
+   });
+   const drop=new Set();
+   groups.forEach(g=>{
+     if(g.length<2)return;
+     g.sort((x,y)=>{
+       const ax=validCode(x.a), ay=validCode(y.a), abx=/^AB\d+$/.test(ax), aby=/^AB\d+$/.test(ay);
+       if(abx!==aby)return aby-abx;
+       const agx=/^AGBK\d+$/.test(ax), agy=/^AGBK\d+$/.test(ay);if(agx!==agy)return agy-agx;
+       const sx=Object.values(x.a).filter(v=>v!=null&&t(v)!=='').length, sy=Object.values(y.a).filter(v=>v!=null&&t(v)!=='').length;
+       return sy-sx||x.i-y.i;
+     });
+     g.slice(1).forEach(x=>drop.add(x.i));
+   });
+   if(drop.size)window.agents=window.agents.filter((_,i)=>!drop.has(i));
+ }
+ const oldRender=window.render;
+ window.render=function(){classifyManual();return oldRender.apply(this,arguments);};
+ const oldLoad=window.loadCRMData;
+ window.loadCRMData=async function(){const r=await oldLoad.apply(this,arguments);classifyManual();return r;};
+ window.ephClassifyManualAgents=classifyManual;
+})();
+</script>
+
+<script id="eph-final-manual-agent-numbering-override-20261023">
+(function(){
+  'use strict';
+  /* FINAL RULE: these four records were manually added and must use the manual
+     AB sequence. Their previous AGBK012-015 labels were erroneous. */
+  const manualByPhone={
+    '60167160462':'AB011', // James Issachar
+    '60189434568':'AB012', // Victor Chang
+    '601137301227':'AB013', // Freya Gwee
+    '60163533138':'AB014' // BK
+  };
+  const manualByName={
+    'jamesissachar':'AB011',
+    'victorchang':'AB012',
+    'freyagwee':'AB013',
+    'bk':'AB014'
+  };
+  function digits(v){return String(v||'').replace(/\D/g,'');}
+  function phoneKey(v){
+    let d=digits(v);
+    if(d.startsWith('0060'))d=d.slice(2);
+    if(d.startsWith('60'))return '60'+d.slice(2).replace(/^0/,'');
+    if(d.startsWith('0'))return '60'+d.slice(1);
+    if(d.startsWith('1')&&(d.length===9||d.length===10))return '60'+d;
+    return d;
+  }
+  function nameKey(v){return String(v||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+  function forceManualCodes(){
+    if(!Array.isArray(window.agents))return;
+    for(const a of window.agents){
+      const pk=phoneKey(a.phone||a.mobile||a['Phone Number']);
+      const nk=nameKey(a.name||a.agentName||a['Agent / Broker Name']);
+      const old=String(a.displayCode||a.id||a.agent_code||a.agentCode||'').toUpperCase();
+      const code=manualByPhone[pk]||manualByName[nk]||(/^AGBK01[2-5]$/.test(old)?({AGBK012:'AB011',AGBK013:'AB012',AGBK014:'AB013',AGBK015:'AB014'}[old]||''):'');
+      if(code){
+        a.displayCode=code;
+        a.source='Manual';
+        a._eph_manual_agent=true;
+        // Keep the database row identity intact; only the business display ID changes.
+      }
+    }
+    // Remove duplicate in-memory rows for the same manually added agent.
+    const seen=new Set();
+    window.agents=window.agents.filter(a=>{
+      const code=String(a.displayCode||'').toUpperCase();
+      const pk=phoneKey(a.phone||a.mobile||'');
+      const nk=nameKey(a.name||'');
+      const key=code||pk||nk;
+      if(!key)return true;
+      if(seen.has(key))return false;
+      seen.add(key);return true;
+    });
+  }
+  const prevRender=window.render;
+  window.render=function(){forceManualCodes();return prevRender.apply(this,arguments);};
+  // Also run immediately in case this patch is loaded after the data has already rendered.
+  forceManualCodes();
+})();
+</script>
 </body></html>
