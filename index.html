@@ -5658,6 +5658,40 @@ document.addEventListener('click', function(event) {
 })();
 </script>
 
+<script>
+/* Contact History navigation hardening */
+(function(){
+ function openCH(ev){
+  const b=ev.target&&ev.target.closest&&ev.target.closest('[data-page="contactHistory"]');
+  if(!b)return;
+  ev.preventDefault();ev.stopPropagation();ev.stopImmediatePropagation();
+  try{currentPage='contactHistory'}catch(e){}
+  document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x.dataset.page==='contactHistory'));
+  const crumb=document.getElementById('crumbTitle');if(crumb)crumb.textContent='Contact History';
+  const c=document.getElementById('content');if(c&&typeof window.ephCHRenderPage==='function')c.innerHTML=window.ephCHRenderPage();
+ }
+ document.addEventListener('click',openCH,true);
+ // Rebind after login/app view changes too
+ const install=()=>{const nav=document.getElementById('sideNav');if(nav&&!nav.querySelector('[data-page="contactHistory"]')){const b=document.createElement('button');b.dataset.page='contactHistory';b.innerHTML='<span class="ico">☏</span>Contact History';nav.appendChild(b)}};
+ install();document.addEventListener('DOMContentLoaded',install);setTimeout(install,500);setTimeout(install,1500);
+})();
+</script>
+<style>
+.ch-log-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap}
+.ch-log-actions .btn{font-size:12px;padding:6px 10px}
+.btn.danger{background:#b42318!important;color:#fff!important;border-color:#b42318!important}
+</style>
+<script>
+(function(){
+const chList=()=>window.__ephCHContacts||(window.__ephCHContacts=[]);
+const chStamp=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16)};
+const chSave=async c=>{c.updated=chStamp();if(window.__ephCHPersist)window.__ephCHPersist();if(typeof window.ephCHSyncOne==='function')await window.ephCHSyncOne(c);if(typeof window.ephCHRefresh==='function')window.ephCHRefresh();};
+window.ephCHEditLog=function(id,index){const c=chList().find(x=>String(x.id)===String(id));if(!c||!Array.isArray(c.logs)||!c.logs[index])return;const l=c.logs[index];window.ephCHModalFinal('Edit Contact Log #'+(index+1),[
+['date','Contact Date & Time','datetime-local'],['method','Contact Method','select:WhatsApp|Phone Call|SMS|Email|In Person|Viewing|Other'],['status','Contact Status','select:Open|Follow-Up|Waiting|Appointment Set|Closed|Not Interested'],['dealingWith','Dealing With','select:Agent|Buyer|Tenant|Owner|Other'],['notes','Notes','textarea'],['follow','Next Follow-up','date'],['next','Next Action','text'],['handled','Handled By','text']
+],async d=>{try{Object.assign(l,d);if(!l.date)l.date=chStamp();await chSave(c);alert('Contact log updated.')}catch(e){alert('Update failed: '+(e.message||e))}},l);};
+window.ephCHDeleteLog=async function(id,index){const c=chList().find(x=>String(x.id)===String(id));if(!c||!Array.isArray(c.logs)||!c.logs[index])return;if(!confirm('Delete Contact Log #'+(index+1)+'? This cannot be undone.'))return;try{c.logs.splice(index,1);await chSave(c);alert('Contact log deleted.')}catch(e){alert('Delete failed: '+(e.message||e))}};
+})();
+</script>
 </body></html>
 <!-- EPH persistence repair: expanded listing row hydration and awaited owner CRM sync on Property Listing save. -->
 
@@ -5968,5 +6002,409 @@ document.addEventListener('click', function(event) {
    window.loadCRMData=async function(){await priorLoad.apply(this,arguments);try{hydrate();if(typeof render==='function')render();}catch(e){console.warn('SPA / Tenancy file hydration skipped:',e);}};
  }
  window.ephHydrateAgreementReminderFilesV2=hydrate;
+})();
+</script>
+<!-- Global one-tap Story sound control: applies to every Story video and persists across auto-next. -->
+<style id="eph-story-global-mute-all-v5-style">
+#ephPublicStoryPlayer .eph-story-controls [data-eph-global-story-mute]{
+  white-space:nowrap;min-height:34px;touch-action:manipulation;
+}
+</style>
+<script id="eph-story-global-mute-all-v5">
+(function(){
+  'use strict';
+  if(window.__ephStoryGlobalMuteAllV5Installed)return;
+  window.__ephStoryGlobalMuteAllV5Installed=true;
+
+  var STORAGE_KEY='eph_story_all_videos_muted_v1';
+  var muted=true; // Safe autoplay default. The viewer can change this with one tap.
+  try{
+    var saved=window.localStorage.getItem(STORAGE_KEY);
+    if(saved==='0')muted=false;
+    else if(saved==='1')muted=true;
+  }catch(e){}
+  window.__ephStoryAllMuted=muted;
+  window.ephStoryMuted=muted;
+
+  function getStoryHost(){return document.getElementById('ephPublicStoryPlayer');}
+  function storyMedia(){
+    var nodes=[];
+    try{
+      document.querySelectorAll('#ephPublicStoryPlayer video, #ephPublicStoryPlayer iframe, #stories .eph-story-frame video, #stories .eph-story-frame iframe').forEach(function(el){
+        if(nodes.indexOf(el)<0)nodes.push(el);
+      });
+    }catch(e){}
+    return nodes;
+  }
+  function providerOf(frame){
+    var src=String(frame&&frame.src||'').toLowerCase();
+    if(/youtube\.com|youtube-nocookie\.com/.test(src))return 'youtube';
+    if(/player\.vimeo\.com/.test(src))return 'vimeo';
+    if(/drive\.google\.com/.test(src))return 'drive';
+    return 'other';
+  }
+  function post(frame,payload){
+    try{if(frame&&frame.contentWindow)frame.contentWindow.postMessage(JSON.stringify(payload),'*');}catch(e){}
+  }
+  function applyFrame(frame,value,forceDriveReload){
+    var provider=providerOf(frame);
+    if(provider==='youtube'){
+      post(frame,{event:'command',func:value?'mute':'unMute',args:[]});
+      post(frame,{event:'command',func:'setVolume',args:[value?0:100]});
+      return;
+    }
+    if(provider==='vimeo'){
+      post(frame,{method:'setVolume',value:value?0:1});
+      post(frame,{method:'setMuted',value:!!value});
+      return;
+    }
+    if(provider==='drive'){
+      // Drive Preview is cross-origin and exposes no supported parent-page mute API.
+      // On an explicit user action, reload the Preview URL with its mute flag set/cleared.
+      try{
+        var u=new URL(frame.src,location.href);
+        if(value){u.searchParams.set('mute','1');u.searchParams.set('autoplay','1');}
+        else{u.searchParams.delete('mute');u.searchParams.set('autoplay','1');}
+        var next=u.toString();
+        if(forceDriveReload&&frame.dataset.ephMuteReloadFor!==String(value)){
+          frame.dataset.ephMuteReloadFor=String(value);
+          frame.src='about:blank';
+          setTimeout(function(){if(frame.isConnected)frame.src=next;},60);
+        }else if(!forceDriveReload&&frame.src!==next){
+          frame.src=next;
+        }
+      }catch(e){}
+    }
+  }
+  function updateButton(){
+    var host=getStoryHost();if(!host)return;
+    var controls=host.querySelector('.eph-story-controls');
+    if(!controls){
+      controls=document.createElement('div');
+      controls.className='eph-story-controls';
+      controls.style.cssText='display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:10px';
+      host.appendChild(controls);
+    }
+    // Remove the older per-current-video button so the single global control is unambiguous.
+    controls.querySelectorAll('[data-eph-story-sound]').forEach(function(old){old.remove();});
+    var btn=controls.querySelector('[data-eph-global-story-mute]');
+    if(!btn){
+      btn=document.createElement('button');
+      btn.type='button';btn.className='btn small';
+      btn.setAttribute('data-eph-global-story-mute','1');
+      btn.addEventListener('click',function(){setAllStoryMuted(!window.__ephStoryAllMuted,true);});
+      controls.appendChild(btn);
+    }
+    var label=muted?'🔊 Unmute All Story Videos':'🔇 Mute All Story Videos';
+    if(btn.textContent!==label)btn.textContent=label;
+    btn.title=muted?'Turn sound on for Story videos':'Mute every Story video';
+    btn.setAttribute('aria-label',btn.title);
+    btn.setAttribute('aria-pressed',muted?'true':'false');
+  }
+  function applyAll(value,forceDriveReload){
+    muted=!!value;
+    window.__ephStoryAllMuted=muted;
+    window.ephStoryMuted=muted;
+    storyMedia().forEach(function(el){
+      if(el.tagName==='VIDEO'){
+        try{el.muted=muted;el.defaultMuted=muted;}catch(e){}
+      }else if(el.tagName==='IFRAME'){
+        applyFrame(el,muted,!!forceDriveReload);
+      }
+    });
+    updateButton();
+  }
+  function setAllStoryMuted(value,fromUser){
+    muted=!!value;
+    window.__ephStoryAllMuted=muted;
+    window.ephStoryMuted=muted;
+    if(fromUser){try{window.localStorage.setItem(STORAGE_KEY,muted?'1':'0');}catch(e){}}
+    // Some providers initialize asynchronously. Re-send the same command after their player is ready.
+    applyAll(muted,!!fromUser);
+    [120,380,850,1500,2500,4000,6000].forEach(function(ms){setTimeout(function(){applyAll(muted,false);},ms);});
+    updateButton();
+  }
+  window.ephSetPublicStorySound=setAllStoryMuted;
+  window.ephSetAllStoryVideosMuted=function(){setAllStoryMuted(true,true);};
+  window.ephUnmuteAllStoryVideos=function(){setAllStoryMuted(false,true);};
+
+  var hostObserver=null;
+  var hostObserved=null;
+  function attachHostObserver(){
+    var h=getStoryHost();
+    if(!h||!window.MutationObserver||hostObserved===h)return;
+    if(hostObserver){try{hostObserver.disconnect();}catch(e){}}
+    hostObserved=h;
+    hostObserver=new MutationObserver(function(){afterStoryRender();});
+    hostObserver.observe(h,{childList:true,subtree:true});
+  }
+  function afterStoryRender(){
+    // The previous Story renderer defaults to muted on each auto-next; reapply the viewer's choice.
+    attachHostObserver();
+    setTimeout(function(){applyAll(muted,false);},80);
+    setTimeout(function(){applyAll(muted,false);},300);
+    setTimeout(function(){applyAll(muted,false);},700);
+    setTimeout(updateButton,80);
+  }
+
+  // The Story player is created later during DOMContentLoaded, so watch briefly for its insertion.
+  if(window.MutationObserver&&document.documentElement){
+    var bootObserver=new MutationObserver(function(){
+      if(getStoryHost()){attachHostObserver();bootObserver.disconnect();afterStoryRender();}
+    });
+    bootObserver.observe(document.documentElement,{childList:true,subtree:true});
+    if(getStoryHost()){attachHostObserver();bootObserver.disconnect();}
+  }
+  // Reconcile the final Story markup function after the earlier autoplay wrappers.
+  var oldMarkup=window.ephPublicStoryMarkup;
+  if(typeof oldMarkup==='function'&&!oldMarkup.__ephGlobalMuteWrappedV5){
+    var wrappedMarkup=function(){
+      var result=oldMarkup.apply(this,arguments);
+      afterStoryRender();
+      return result;
+    };
+    wrappedMarkup.__ephGlobalMuteWrappedV5=true;
+    window.ephPublicStoryMarkup=wrappedMarkup;
+    try{ephPublicStoryMarkup=wrappedMarkup;}catch(e){}
+  }
+  var oldMove=window.ephMovePublicStory;
+  if(typeof oldMove==='function'&&!oldMove.__ephGlobalMuteWrappedV5){
+    var wrappedMove=function(){
+      var result=oldMove.apply(this,arguments);
+      afterStoryRender();
+      return result;
+    };
+    wrappedMove.__ephGlobalMuteWrappedV5=true;
+    window.ephMovePublicStory=wrappedMove;
+    try{ephMovePublicStory=wrappedMove;}catch(e){}
+  }
+  document.addEventListener('DOMContentLoaded',afterStoryRender,{once:true});
+  window.addEventListener('load',afterStoryRender,{once:true});
+  applyAll(muted,false);
+})();
+</script>
+
+
+
+<!-- Contact History Admin feature loaded after the CRM app scripts -->
+<script id="eph-contact-history-admin-preview-v1">
+(function(){
+'use strict';
+if(window.__ephContactHistoryInstalled)return;window.__ephContactHistoryInstalled=true;
+const KEY='eph_contact_history_preview_v1';let contacts=[];
+try{contacts=JSON.parse(localStorage.getItem(KEY)||'[]');if(!Array.isArray(contacts))contacts=[]}catch(e){contacts=[]}
+window.__ephCHContacts=contacts;window.__ephCHPersist=function(){try{localStorage.setItem(KEY,JSON.stringify(window.__ephCHContacts||[]));return true}catch(e){alert('Unable to save Contact History: browser storage is blocked or full.');return false}};
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(contacts))}catch(e){alert('Browser storage is unavailable.')} };
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dateNow=()=>new Date().toISOString().slice(0,16);
+const css=`.ch-wrap{display:grid;gap:18px}.ch-pager{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}.ch-person{margin:5px 8px;border:1px solid transparent;border-radius:10px}.ch-person.active{border-color:#8d713a;box-shadow:inset 3px 0 #d5ad61}.ch-log{background:linear-gradient(90deg,rgba(213,173,97,.08),transparent);border-radius:0 10px 10px 0;padding:12px 14px}.ch-log p{margin:8px 0;line-height:1.6}.ch-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.ch-stat{background:#191b20;border:1px solid var(--line);border-radius:12px;padding:14px}.ch-stat small{color:var(--muted)}.ch-stat b{display:block;font-size:23px;margin-top:5px}.ch-grid{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(0,1.5fr);gap:14px}.ch-list{max-height:65vh;overflow:auto}.ch-person{padding:13px;border-bottom:1px solid var(--line);cursor:pointer}.ch-person.active,.ch-person:hover{background:#28251d}.ch-person b{display:block}.ch-person small{color:var(--muted)}.ch-log{border-left:2px solid #594524;margin:8px 0 14px;padding:0 0 0 14px}.ch-log b{display:block}.ch-log small{color:var(--muted)}.ch-actions{display:flex;gap:8px;flex-wrap:wrap}.ch-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ch-form label{display:grid;gap:5px;color:var(--muted);font-size:11px}.ch-form .full{grid-column:1/-1}.ch-form input,.ch-form select,.ch-form textarea{width:100%;background:#101216;border:1px solid #343741;border-radius:8px;padding:9px;color:var(--text)}@media(max-width:760px){.ch-grid{grid-template-columns:1fr}.ch-stats{grid-template-columns:repeat(2,1fr)}.ch-form{grid-template-columns:1fr}.ch-form .full{grid-column:auto}}`;
+const style=document.createElement('style');style.textContent=css;document.head.appendChild(style);
+const nav=document.getElementById('sideNav');if(nav&&!nav.querySelector('[data-page="contactHistory"]')){let b=document.createElement('button');b.dataset.page='contactHistory';b.innerHTML='<span class="ico">☏</span>Contact History';nav.appendChild(b)}
+const baseRender=window.render;
+function chFmt(v){if(!v)return '—';const d=new Date(v);if(Number.isNaN(d.getTime()))return String(v);return d.toLocaleString('en-MY',{day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}
+function chEsc(v){return esc(v||'—')}
+function page(){
+ let q=(document.getElementById('chSearch')?.value||'').toLowerCase();
+ let type=document.getElementById('chType')?.value||'All contact types';
+ let selected=window.__chSelected||contacts[0]?.id;
+ let arr=contacts.filter(c=>(type==='All contact types'||(c.type||'Customer')===type)&&[c.name,c.phone,c.property,c.id,c.assignedAgent].join(' ').toLowerCase().includes(q));
+ let pageNo=Math.max(1,parseInt(document.getElementById('chPage')?.value||'1',10));
+ const statTypes=['Agent','Tenant','Buyer','Other'];
+ const statCount=t=>contacts.filter(c=>(c.type||'Customer')===t).length;
+ const statLogs=contacts.reduce((n,c)=>n+(Array.isArray(c.logs)?c.logs.length:0),0);
+ arr.sort((a,b)=>String(b.updated||b.created||'').localeCompare(String(a.updated||a.created||'')));
+ let totalPages=Math.max(1,Math.ceil(arr.length/5));pageNo=Math.min(pageNo,totalPages);
+ let pageArr=arr.slice((pageNo-1)*5,pageNo*5),cur=contacts.find(c=>c.id===selected),logs=cur?.logs||[];
+ const firstDate=c=>c.logs?.length?chFmt(c.logs[0].date):'—';
+ const lastDate=c=>c.logs?.length?chFmt(c.logs[c.logs.length-1].date):'—';
+ const pages=Array.from({length:totalPages},(_,i)=>i+1).map(n=>`<button class="btn small ${n===pageNo?'gold':''}" onclick="document.getElementById('chPage').value=${n};ephCHRefresh()">${n}</button>`).join('');
+ return `<div class="ch-wrap"><div class="section-head"><div><div class="eyebrow">Admin Workspace</div><h2>Contact History</h2></div><div class="toolbar"><button class="btn gold" onclick="ephCHAddContact()">＋ Add Contact</button></div></div>
+ <section class="ch-stats"><div class="ch-stat"><small>Total Contacts</small><b>${contacts.length}</b></div><div class="ch-stat"><small>Total Contact Logs</small><b>${statLogs}</b></div>${statTypes.map(t=>`<div class="ch-stat"><small>${esc(t)}</small><b>${statCount(t)}</b></div>`).join('')}</section>
+ <section class="panel"><div class="panel-head"><div><h3>Contact History</h3></div></div><div class="panel-body ch-filters"><input id="chSearch" class="field" placeholder="Search customer / phone / property" value="${esc(document.getElementById('chSearch')?.value||'')}" oninput="document.getElementById('chPage').value=1;ephCHRefresh()"><select id="chType" class="field" onchange="document.getElementById('chPage').value=1;ephCHRefresh()"><option ${type==='All contact types'?'selected':''}>All contact types</option>${['Customer','Buyer','Tenant','Owner / Landlord','Agent','Other'].map(x=>`<option ${type===x?'selected':''}>${x}</option>`).join('')}</select><input type="hidden" id="chPage" value="${pageNo}"></div>
+ <div class="table-wrap"><table class="ch-directory"><thead><tr><th>Customer</th><th>Category</th><th>Dealing With</th><th>First Contact</th><th>Last Contact</th><th>Logs</th><th>Action</th></tr></thead><tbody>${pageArr.map(c=>`<tr><td><strong>${esc(c.name||'—')}</strong><small>${esc(c.id||'')}</small></td><td>${esc((c.type&&c.type!=='Select agent'&&c.type!=='Select category')?c.type:(c.category&&c.category!=='Select agent'?c.category:'—'))}</td><td>${esc(c.dealingWithName||c.dealingWith||c.logs?.[0]?.dealingWith||'—')}</td><td>${firstDate(c)}</td><td>${lastDate(c)}</td><td>${(c.logs||[]).length}</td><td><button class="btn small" onclick="ephCHSelect('${esc(c.id)}')">View</button></td></tr>`).join('')||'<tr><td colspan="7"><div class="empty">No contacts found</div></td></tr>'}</tbody></table></div>
+ <div class="panel-body ch-pager"><span>Showing ${arr.length?((pageNo-1)*5+1):0}–${Math.min(pageNo*5,arr.length)} of ${arr.length} records</span><div class="ch-actions"><button class="btn small" ${pageNo<=1?'disabled':''} onclick="document.getElementById('chPage').value=${Math.max(1,pageNo-1)};ephCHRefresh()">Previous</button>${pages}<button class="btn small" ${pageNo>=totalPages?'disabled':''} onclick="document.getElementById('chPage').value=${Math.min(totalPages,pageNo+1)};ephCHRefresh()">Next</button></div></div></section>
+ ${cur?`<section class="panel"><div class="panel-head"><div><h3>${esc(cur.name||'Customer')}</h3><p>${esc(cur.id||'')} · ${esc(cur.assignedAgent||'Unassigned')}</p></div><span class="pill gold">${esc(cur.status||'Open')}</span></div><div class="panel-body"><div class="ch-actions"><button class="btn gold" onclick="ephCHAddLog('${esc(cur.id)}')">＋ Add Contact Log</button><button class="btn" onclick="ephCHEdit('${esc(cur.id)}')">Edit Profile</button></div><div class="ch-profile-grid"><div><small>Phone Number</small><b>${esc(cur.phone||'—')}</b></div><div><small>Email Address</small><b>${esc(cur.email||'—')}</b></div><div><small>Lead Source</small><b>${esc(cur.source||'—')}</b></div><div><small>Interested Property</small><b>${esc(cur.property||'—')}</b></div><div><small>Property Type</small><b>${esc(cur.propertyType||'—')}</b></div><div><small>Budget</small><b>${esc(cur.budget||'—')}</b></div><div><small>Next Follow-up</small><b>${esc(cur.nextFollow||'—')}</b></div></div><h3 style="margin-top:18px">Contact Logs</h3>${logs.slice().map((l,idx)=>({l,idx})).reverse().map(({l,idx})=>`<div class="ch-log"><b>Contact #${idx+1} · ${chFmt(l.date)}</b><small>${esc(l.method||'—')} · ${esc(l.status||l.outcome||'—')}</small><p>${esc(l.notes||'—')}</p><div class="ch-log-actions"><button class="btn small" onclick="ephCHEditLog('${esc(cur.id)}',${idx})">Edit Log</button><button class="btn small danger" onclick="ephCHDeleteLog('${esc(cur.id)}',${idx})">Delete Log</button></div></div>`).join('')||'<div class="empty">No contact logs yet.</div>'}</div></section>`:'<section class="panel"><div class="panel-body"><div class="empty">Select a customer and click View to see contact details.</div></div></section>'}
+ </div>`;
+}
+window.ephCHRenderPage=()=>page();
+window.ephCHRefresh=()=>{let c=document.getElementById('content');if(c&&currentPage==='contactHistory')c.innerHTML=page()};
+window.ephCHSelect=id=>{window.__chSelected=id;ephCHRefresh()};
+window.ephCHAddContact=()=>chModal('Add Contact',[['name','Contact Person','text'],['type','Contact Type','select:Owner / Landlord|Buyer|Tenant|Agent|Other'],['phone','Phone / WhatsApp','text'],['property','Property / Unit','text'],['source','Contact Source','select:WhatsApp|Phone Call|Referral|Walk-in|Facebook|Other']],d=>{if(!d.name.trim()){alert('Contact Person is required');return}let c={id:'CH-'+Date.now().toString(36).toUpperCase(),...d,status:'Open',nextFollow:'',logs:[]};contacts.unshift(c);window.__chSelected=c.id;save();ephCHRefresh()});
+window.ephCHAddLog=id=>chModal('Add Contact Log #'+(c.logs.length+1),[['date','Contact Date & Time','datetime-local'],['method','Method','select:WhatsApp|Phone Call|SMS|Email|In Person|Other'],['outcome','Outcome','select:Connected|No Answer|Replied|Waiting|Appointment Set|Not Interested|Other'],['notes','Contact Notes','textarea'],['follow','Next Follow-Up Date','date'],['next','Next Action','text'],['handled','Handled By','text']],d=>{let c=contacts.find(x=>x.id===id);if(!c)return;c.logs.push({...d,date:d.date||dateNow()});c.nextFollow=d.follow||'';c.status=d.follow?'Follow-Up':(d.outcome==='Waiting'?'Waiting':c.status);save();ephCHRefresh()},true);
+window.ephCHEdit=id=>{let c=contacts.find(x=>x.id===id);if(!c)return;chModal('Edit Contact Profile',[['name','Contact Person','text'],['type','Contact Type','select:Owner / Landlord|Buyer|Tenant|Agent|Other'],['phone','Phone / WhatsApp','text'],['property','Property / Unit','text'],['source','Contact Source','select:WhatsApp|Phone Call|Referral|Walk-in|Facebook|Other']],d=>{Object.assign(c,d);save();ephCHRefresh()},false,c)};
+window.ephCHStatus=id=>{let c=contacts.find(x=>x.id===id);if(!c)return;let v=prompt('Status: Open / Follow-Up / Waiting / Closed',c.status);if(['Open','Follow-Up','Waiting','Closed'].includes(v)){c.status=v;save();ephCHRefresh()}};
+function chModal(title,fields,cb,withLog=false,existing=null){let back=document.getElementById('modalBackdrop');if(!back){back=document.createElement('div');back.id='modalBackdrop';back.className='modal-backdrop';back.innerHTML='<div class="modal"><div class="modal-head"><h3 id="chModalTitle"></h3><button class="btn small" onclick="document.getElementById(\'modalBackdrop\').classList.remove(\'show\')">✕</button></div><div class="modal-content" id="chModalBody"></div><div class="modal-foot"><button class="btn" onclick="document.getElementById(\'modalBackdrop\').classList.remove(\'show\')">Cancel</button><button class="btn gold" id="chModalSave">Save</button></div></div>';document.body.appendChild(back)}back.querySelector('#chModalTitle').textContent=title;back.querySelector('#chModalBody').innerHTML='<div class="ch-form">'+fields.map(([k,l,t])=>{let val=existing?.[k]||((k==='date')?dateNow():'');if(t==='section')return '<div class="ch-form-section full">'+l+'</div>';let input=t.startsWith('select:')?`<select name="${k}">${t.slice(7).split('|').map(x=>`<option ${x===val?'selected':''}>${esc(x)}</option>`).join('')}</select>`:t==='textarea'?`<textarea name="${k}" rows="4">${esc(val)}</textarea>`:`<input name="${k}" type="${t}" value="${esc(val)}">`;return `<label class="${k==='notes'?'full':''}">${esc(l)}${input}</label>`}).join('')+'</div>';back.querySelector('#chModalSave').onclick=()=>{let d={};fields.forEach(([k])=>d[k]=back.querySelector(`[name="${k}"]`)?.value||'');cb(d);back.classList.remove('show')};back.classList.add('show')}
+const oldNav=window.nav;if(typeof oldNav==='function')window.nav=function(p){if(p==='contactHistory'){currentPage='contactHistory';document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===p));let t=document.getElementById('crumbTitle');if(t)t.textContent='Contact History';let c=document.getElementById('content');if(c)c.innerHTML=page();return}return oldNav.apply(this,arguments)};
+window.render=function(){if(currentPage==='contactHistory'){let c=document.getElementById('content');if(c)c.innerHTML=page();return}return baseRender.apply(this,arguments)};
+})();
+</script>
+
+<script id="eph-contact-history-final-fix">
+(function(){
+  // Bind navigation directly to the sidebar item, bypassing competing CRM nav wrappers.
+  function openCH(){
+    try { currentPage='contactHistory'; } catch(e) {}
+    document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page==='contactHistory'));
+    const crumb=document.getElementById('crumbTitle'); if(crumb) crumb.textContent='Contact History';
+    const c=document.getElementById('content'); if(c && window.ephCHRenderPage) c.innerHTML=window.ephCHRenderPage();
+  }
+  function bind(){
+    const b=document.querySelector('#sideNav [data-page="contactHistory"]');
+    if(b && !b.dataset.chBound){b.dataset.chBound='1';b.addEventListener('click',function(e){e.preventDefault();e.stopImmediatePropagation();openCH();},true);}
+  }
+  bind();
+  document.addEventListener('click',function(e){const b=e.target.closest('#sideNav [data-page="contactHistory"]');if(b){e.preventDefault();e.stopImmediatePropagation();openCH();}},true);
+  // Use a dedicated modal to avoid colliding with the CRM's global modal.
+  window.ephCHModalFinal=function(title,fields,cb,existing){
+    let back=document.getElementById('ephCHModalFinal');
+    if(!back){back=document.createElement('div');back.id='ephCHModalFinal';back.className='modal-backdrop';back.innerHTML='<div class="modal"><div class="modal-head"><h3 id="ephCHModalTitle"></h3><button type="button" class="btn small" id="ephCHClose">✕</button></div><div class="modal-content" id="ephCHModalBody"></div><div class="modal-foot"><button type="button" class="btn" id="ephCHCancel">Cancel</button><button type="button" class="btn gold" id="ephCHSave">Save Contact</button></div></div>';document.body.appendChild(back);back.querySelector('#ephCHClose').onclick=back.querySelector('#ephCHCancel').onclick=()=>back.classList.remove('show');back.addEventListener('click',e=>{if(e.target===back)back.classList.remove('show')});}
+    back.querySelector('#ephCHModalTitle').textContent=title;
+    back.querySelector('#ephCHModalBody').innerHTML='<div class="ch-form">'+fields.map(([k,l,t])=>{let val=existing?.[k]||((t==='datetime-local'||k==='date')?(()=>{const n=new Date(),z=n.getTimezoneOffset()*60000;return new Date(n-z).toISOString().slice(0,16)})():'');if(t==='section')return '<div class="ch-form-section full">'+l+'</div>';let input=t.startsWith('select:')?'<select name="'+k+'">'+t.slice(7).split('|').map(x=>'<option '+(x===val?'selected':'')+'>'+x+'</option>').join('')+'</select>':t==='textarea'?'<textarea name="'+k+'" rows="4">'+(val||'')+'</textarea>':'<input name="'+k+'" type="'+t+'" value="'+String(val).replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">';return '<label class="'+(k==='notes'?'full':'')+'">'+l+input+(k==='date'?'<small class="ch-date-hint">Auto-recorded on save. Uses the current date and time when you create the record.</small>':'')+'</label>'}).join('')+'</div>';
+    back.querySelector('#ephCHSave').onclick=function(){let d={};fields.forEach(([k])=>{let el=back.querySelector('[name="'+k+'"]');d[k]=el?el.value:''});if(fields.some(x=>x[0]==='name')&&!String(d.name||'').trim()){alert('Contact Person is required');return;}cb(d);back.classList.remove('show');};back.classList.add('show');
+  };
+  const contacts=window.__ephCHContacts||[];
+  if(window.ephCHAddContact){window.ephCHAddContact=function(){window.ephCHModalFinal('Add Contact Profile + First Contact Log',[
+    ['name','Contact Person / Full Name','text'],['type','Contact Type','select:Owner / Landlord|Buyer|Tenant|Agent|Other'],['phone','Phone Number','tel'],['email','Email Address','email'],['whatsapp','WhatsApp Number','tel'],['company','Company / Agency','text'],['property','Property / Unit / Listing','text'],['location','Preferred Area / Location','text'],['budget','Budget / Asking Price (RM)','number'],['source','Lead Source','select:WhatsApp|Phone Call|Referral|Walk-in|Facebook|Instagram|Property Portal|Google Form|Other'],['priority','Priority','select:Normal|High|Urgent'],['status','Contact Status','select:Open|Follow-Up|Waiting|Appointment Set|Closed|Not Interested'],['date','First Contact Date & Time','datetime-local'],['method','First Contact Method','select:WhatsApp|Phone Call|SMS|Email|In Person|Other'],['outcome','First Contact Outcome','select:Connected|No Answer|Replied|Waiting|Appointment Set|Not Interested|Other'],['notes','First Contact Notes / Conversation Details','textarea'],['follow','Next Follow-Up Date','date'],['next','Next Action','text'],['handled','Handled By','text'],['remarks','Profile Remarks','textarea']
+    ],function(d){let id='CH-'+Date.now().toString(36).toUpperCase();let log={date:d.date||new Date().toISOString().slice(0,16),method:d.method||'Other',outcome:d.outcome||'Connected',notes:d.notes||'',follow:d.follow||'',next:d.next||'',handled:d.handled||''};let c={id,...d,status:d.status|| (d.follow?'Follow-Up':'Open'),nextFollow:d.follow||'',logs:[log]};contacts.unshift(c);window.__chSelected=id;if(window.__ephCHPersist)window.__ephCHPersist();openCH();});};}
+  // Existing Contact Log/Edit modal also routes through the dedicated modal.
+  if(window.ephCHAddLog){window.ephCHAddLog=function(id){window.ephCHModalFinal('Add Follow-Up / Contact Log', [['date','Contact Date & Time','datetime-local'],['method','Contact Method','select:WhatsApp|Phone Call|SMS|Email|In Person|Viewing|Other'],['outcome','Contact Outcome','select:Connected|No Answer|Replied|Waiting for Reply|Appointment Set|Viewing Done|Offer Made|Not Interested|Other'],['notes','Conversation Details / What Was Discussed','textarea'],['follow','Next Follow-Up Date','date'],['next','Next Action / Reminder','text'],['handled','Handled By','text'],['status','Update Contact Status','select:Open|Follow-Up|Waiting|Appointment Set|Closed|Not Interested']],function(d){let c=contacts.find(x=>x.id===id);if(!c)return;if(!Array.isArray(c.logs))c.logs=[];c.logs.push({...d,date:d.date||new Date().toISOString().slice(0,16)});c.nextFollow=d.follow||'';c.status=d.status||(d.follow?'Follow-Up':(d.outcome==='Waiting for Reply'?'Waiting':c.status));if(window.__ephCHPersist)window.__ephCHPersist();openCH();});};}
+
+  // Optional Google Sheets sync endpoint (Apps Script Web App URL configured by user).
+})();
+</script>
+
+
+<style id="eph-contact-history-final-table-cloud">
+.ch-wrap{gap:14px}.ch-grid{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px}.ch-grid>.panel{min-width:0}.ch-list{max-height:none;overflow:visible;border:1px solid var(--line);border-radius:10px}.ch-list table{width:100%;border-collapse:collapse;min-width:560px}.ch-list th{background:#1d2026;color:#aeb2bc;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:10px 11px;white-space:nowrap}.ch-list td{padding:11px;border-top:1px solid var(--line);font-size:12px;vertical-align:middle}.ch-list tbody tr{cursor:pointer;transition:background .15s}.ch-list tbody tr:hover,.ch-list tbody tr.active{background:#28251d}.ch-list td strong{display:block;color:var(--text);font-size:12px}.ch-list td small{display:block;color:var(--muted);font-size:10px;margin-top:3px}.ch-pager{padding:9px 11px!important}.ch-log{padding:9px 12px;margin:7px 0 10px}.ch-log p{font-size:12px;margin:5px 0}.ch-form{gap:9px}.ch-form label{font-size:11px}.ch-form input,.ch-form select,.ch-form textarea{padding:9px 10px}.ch-cloud-state{font-size:10px;color:var(--muted);margin-left:8px}.ch-first-date{border:1px solid #594524;border-radius:9px;padding:9px 11px;background:#201b12;color:#f1c66d;font-size:12px}
+@media(max-width:900px){.ch-grid{grid-template-columns:1fr}.ch-list{overflow-x:auto}}
+ .ch-date-hint{font-size:10px;color:var(--muted);line-height:1.4}.ch-form-section{font-size:13px;font-weight:700;color:var(--text);padding-top:8px;border-top:1px solid var(--line);margin-top:4px}.ch-filters{display:grid;grid-template-columns:minmax(220px,1fr) 220px;gap:10px}.ch-directory{width:100%;min-width:760px;border-collapse:collapse}.ch-directory th{background:#1d2026;color:#aeb2bc;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding:12px}.ch-directory td{padding:12px;border-top:1px solid var(--line);font-size:12px}.ch-directory td strong,.ch-directory td small{display:block}.ch-directory td small{color:var(--muted);margin-top:3px}.ch-profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0}.ch-profile-grid>div{padding:10px;border:1px solid var(--line);border-radius:9px}.ch-profile-grid small,.ch-profile-grid b{display:block}.ch-profile-grid small{color:var(--muted);font-size:10px;margin-bottom:5px}.ch-profile-grid b{font-size:12px;overflow-wrap:anywhere}@media(max-width:760px){.ch-filters{grid-template-columns:1fr}.ch-profile-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+<script id="eph-contact-history-cloud-save-final">
+(function(){
+ 'use strict';
+ const key='eph_contact_history_preview_v1';
+ const state=()=>window.__ephCHContacts||(window.__ephCHContacts=[]);
+ const localStamp=()=>{const n=new Date(),z=n.getTimezoneOffset()*60000;return new Date(n-z).toISOString().slice(0,16)};
+ const notify=(m,bad)=>{if(typeof window.toast==='function')window.toast(m,!!bad);else alert(m)};
+ let loading=false,loadedToken='';
+ async function cloudLoad(){
+   if(loading)return;loading=true;
+   try{
+     if(typeof window.ephRequest!=='function')throw new Error('CRM cloud connection is not available. Please sign in as Admin.');
+     const r=await window.ephRequest('/rest/v1/crm_records?select=id,kind,data,updated_at&kind=eq.contactHistory&order=updated_at.desc');
+     const rows=Array.isArray(r.data)?r.data:[];
+     const mapped=rows.map(x=>({...((x.data&&typeof x.data==='object')?x.data:{}),_dbid:x.id}));
+     const live=window.__ephCHContacts||(window.__ephCHContacts=[]);live.splice(0,live.length,...mapped);
+     try{localStorage.setItem(key,JSON.stringify(mapped));}catch(e){}
+     if(typeof window.ephCHRefresh==='function'&&typeof currentPage!=='undefined'&&currentPage==='contactHistory')window.ephCHRefresh();
+     loadedToken=window.EPH_ADMIN_SESSION&&window.EPH_ADMIN_SESSION.access_token||'admin';
+   }catch(e){notify('Contact History cloud load failed: '+(e.message||e),true)}
+   finally{loading=false}
+ }
+ async function cloudSave(c){
+   if(typeof window.ephSaveKind!=='function')throw new Error('CRM cloud save function is unavailable.');
+   const data={...c};delete data._dbid;delete data._localOnly;
+   await window.ephSaveKind('contactHistory',data,c._dbid||null);
+   // New records get their canonical database ID after insert; reload from CRM source.
+   await cloudLoad();
+   return true;
+ }
+ // Contact directory: one record per row, five rows per page.
+ const originalRender=window.ephCHRenderPage;
+ if(typeof originalRender==='function')window.ephCHRenderPage=function(){
+   const html=originalRender();
+   return html.replace(/<div class="ch-list">\$\{pageArr\.map\(c=>`[\s\S]*?<\/div>\$\{pageArr\.map\(c=>/,'<div class="ch-list"><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Phone / Property</th><th>Logs</th><th>Next Follow-up</th></tr></thead><tbody>${pageArr.map(c=>`<tr class="${c.id===selected?\'active\':\'\'}" onclick="ephCHSelect(\'${c.id}\')"><td><strong>${esc(c.id)} · ${esc(c.name)}</strong><small>${esc(c.type||\'Contact\')}</small></td><td>${esc(c.phone||\'—\')}<small>${esc(c.property||\'—\')}</small></td><td>${(c.logs||[]).length}</td><td>${esc(c.nextFollow||\'—\')}</td></tr>`).join(\'\')||\'<tr><td colspan="4">No contacts found</td></tr>\'}</tbody></table></div></div>');
+ };
+ // Use the same CRM sign-in and crm_records table as the rest of this Hub.
+ window.ephCHLoadCloud=cloudLoad;
+ window.ephCHAddContact=function(){
+   let agentNames=[];try{if(typeof agents!=='undefined'&&Array.isArray(agents))agentNames=agents.map(a=>a.name).filter(Boolean)}catch(e){}
+   const agentOpts=['Select agent',...agentNames];
+   window.ephCHModalFinal('Add Contact',[
+    ['__customerSection','Customer / Lead Information','section'],['name','Full Name *','text'],['phone','Phone Number *','tel'],['email','Email Address','email'],
+    ['source','Lead Source','select:Select source|WhatsApp|Phone Call|Referral|Walk-in|Facebook|Instagram|Property Portal|Google Form|Other'],
+    ['property','Interested Property','text'],['propertyType','Property Type','select:Select type|Condo / Apartment|Landed|Commercial|Factory|Land|Other'],
+    ['budget','Budget','text'],['assignedAgent','Assigned Agent','select:'+agentOpts.join('|')],
+    ['__firstContactSection','First Contact','section'],['date','Contact Date & Time','datetime-local'],['method','Contact Method','select:Select method|WhatsApp|Phone Call|SMS|Email|In Person|Other'],
+    ['status','Lead Status','select:Select status|New|Contacted|Follow-Up|Qualified|Viewing|Negotiation|Closed|Not Interested'],
+    ['follow','Next Follow-up','date'],['notes','First Contact Notes','textarea']
+   ],async function(d){
+     try{if(!String(d.name||'').trim())throw new Error('Full Name is required.');if(!String(d.phone||'').trim())throw new Error('Phone Number is required.');
+       const next=Math.max(0,...state().map(x=>Number(String(x.id||'').replace(/^R/i,''))||0))+1;
+       const id='R'+String(next).padStart(3,'0');
+       const stamp=localStamp();
+       const first={date:d.date||stamp,method:d.method||'',status:d.status||'New',outcome:d.status||'New',notes:d.notes||'',follow:d.follow||''};
+       const c={...d,id,type:'Customer',status:d.status||'New',nextFollow:d.follow||'',logs:[first],created:stamp,updated:stamp};
+       await cloudSave(c);window.__chSelected=id;notify('Contact '+id+' saved.');if(typeof window.ephCHRefresh==='function')window.ephCHRefresh();
+     }catch(e){notify('Contact save failed: '+(e.message||e),true)}
+   });
+ };
+ window.ephCHAddLog=function(id){
+   const c=state().find(x=>String(x.id)===String(id));if(!c)return;
+   window.ephCHModalFinal('Add Contact Log',[
+    ['date','Contact Date & Time','datetime-local'],
+    ['method','Contact Method','select:Select method|WhatsApp|Phone Call|SMS|Email|In Person|Viewing|Other'],
+    ['status','Contact Status','select:Select status|New|Contacted|Follow-Up|Qualified|Viewing|Negotiation|Closed|Not Interested'],
+    ['notes','Notes','textarea']
+   ],async function(d){try{c.logs=Array.isArray(c.logs)?c.logs:[];c.logs.push({date:d.date||localStamp(),method:d.method||'',status:d.status||'',outcome:d.status||'',notes:d.notes||''});c.status=d.status||c.status;c.updated=localStamp();await cloudSave(c);notify('Contact log saved.');if(typeof window.ephCHRefresh==='function')window.ephCHRefresh()}catch(e){notify('Contact log save failed: '+(e.message||e),true)}});
+ };
+ window.ephCHEdit=function(id){const c=state().find(x=>String(x.id)===String(id));if(!c)return;let agentNames=[];try{if(typeof agents!=='undefined'&&Array.isArray(agents))agentNames=agents.map(a=>a.name).filter(Boolean)}catch(e){};const opts=['Select agent',...agentNames];window.ephCHModalFinal('Edit Customer / Lead Information',[
+  ['name','Full Name *','text'],['phone','Phone Number *','tel'],['email','Email Address','email'],['source','Lead Source','select:Select source|WhatsApp|Phone Call|Referral|Walk-in|Facebook|Instagram|Property Portal|Google Form|Other'],['property','Interested Property','text'],['propertyType','Property Type','select:Select type|Condo / Apartment|Landed|Commercial|Factory|Land|Other'],['budget','Budget','text'],['assignedAgent','Assigned Agent','select:'+opts.join('|')],['follow','Next Follow-up','date']
+ ],async d=>{try{Object.assign(c,d);c.nextFollow=d.follow||c.nextFollow||'';c.updated=localStamp();await cloudSave(c);notify('Customer profile updated.');if(typeof window.ephCHRefresh==='function')window.ephCHRefresh()}catch(e){notify('Profile update failed: '+e.message,true)}},c)};
+ window.ephCHStatus=function(id){const c=state().find(x=>String(x.id)===String(id));if(!c)return;const v=prompt('Status: Open / Follow-Up / Waiting / Closed',c.status);if(!['Open','Follow-Up','Waiting','Closed'].includes(v))return;c.status=v;c.updated=localStamp();cloudSave(c).then(()=>notify('Contact status updated.')).catch(e=>notify('Status update failed: '+e.message,true));};
+ // Load from cloud whenever the user opens Contact History; never expose setup controls.
+ const oldNav=window.nav;if(typeof oldNav==='function'&&!oldNav.__ephCHCloudWrapped){const wrapped=function(p){const r=oldNav.apply(this,arguments);if(p==='contactHistory')setTimeout(cloudLoad,0);return r};wrapped.__ephCHCloudWrapped=true;window.nav=wrapped;}
+ const oldPage=window.ephCHRenderPage;window.ephCHRenderPage=function(){const h=oldPage?oldPage():'';return h.replace('＋ Add Contact</button>','＋ Add Contact</button>');};
+ // Existing final navigation handler calls openCH directly, so hook its click too.
+ document.addEventListener('click',e=>{const b=e.target&&e.target.closest&&e.target.closest('#sideNav [data-page="contactHistory"]');if(b)setTimeout(cloudLoad,0)},true);
+})();
+</script>
+
+<script id="eph-contact-history-requested-fields-edit-delete">
+(function(){
+'use strict';
+const list=()=>window.__ephCHContacts||(window.__ephCHContacts=[]);
+const stamp=()=>{const n=new Date(),z=n.getTimezoneOffset()*60000;return new Date(n-z).toISOString().slice(0,16)};
+const persist=()=>window.__ephCHPersist&&window.__ephCHPersist();
+const cats='Agent|Buyer|Tenant|Owner|Other';
+const methods='WhatsApp|Phone Call|SMS|Email|In Person|Viewing|Other';
+const statuses='Open|Follow-Up|Waiting|Appointment Set|Closed|Not Interested';
+function saveRefresh(){persist();if(typeof window.ephCHRefresh==='function')window.ephCHRefresh();}
+window.ephCHAddContact=function(){
+ window.ephCHModalFinal('Add Contact — Basic Information',[
+ ['__s1','Customer / Lead Information','section'],['type','Contact Category','select:'+cats],['name','Full Name *','text'],['phone','Phone Number *','tel'],['email','Email Address','email'],['source','Lead Source','select:Select source|WhatsApp|Phone Call|Referral|Walk-in|Facebook|Instagram|Property Portal|Google Form|Other'],['property','Interested Property','text'],['propertyType','Property Type','select:Select type|Condo / Apartment|Landed|Commercial|Factory|Land|Other'],['budget','Budget','text'],['assignedAgent','Assigned Agent','text'],['dealingWith','Dealing With','select:'+cats],['__s2','First Contact','section'],['date','Contact Date & Time','datetime-local'],['method','Contact Method','select:Select method|'+methods],['status','Lead Status','select:Select status|New|'+statuses],['follow','Next Follow-up','date'],['notes','First Contact Notes','textarea']
+ ],async d=>{try{if(!String(d.name||'').trim()||!String(d.phone||'').trim())throw new Error('Full Name and Phone Number are required.');const arr=list();const n=Math.max(0,...arr.map(x=>Number(String(x.id||'').replace(/^R/i,''))||0))+1;const id='R'+String(n).padStart(3,'0');const now=stamp();const log={date:d.date||now,method:d.method||'',status:d.status||'New',outcome:d.status||'New',dealingWith:d.dealingWith||'',notes:d.notes||'',follow:d.follow||''};const c={...d,id,type:d.type||'Other',status:d.status||'Open',nextFollow:d.follow||'',logs:[log],created:now,updated:now};arr.unshift(c);window.__chSelected=id;saveRefresh();if(typeof window.ephCHSyncOne==='function')await window.ephCHSyncOne(c); }catch(e){alert('Unable to save contact: '+(e.message||e));}});
+};
+window.ephCHAddLog=function(id){const c=list().find(x=>String(x.id)===String(id));if(!c)return;window.ephCHModalFinal('Add Contact Log #'+((c.logs||[]).length+1),[
+ ['date','Contact Date & Time','datetime-local'],['method','Contact Method','select:'+methods],['status','Contact Status','select:'+statuses],['dealingWith','Dealing With','select:'+cats],['notes','Notes','textarea'],['follow','Next Follow-up','date'],['next','Next Action','text'],['handled','Handled By','text']
+ ],async d=>{try{c.logs=Array.isArray(c.logs)?c.logs:[];c.logs.push({...d,date:d.date||stamp()});c.nextFollow=d.follow||'';c.status=d.status||c.status;c.updated=stamp();saveRefresh();if(typeof window.ephCHSyncOne==='function')await window.ephCHSyncOne(c);}catch(e){alert('Unable to save contact log: '+(e.message||e));}});};
+window.ephCHEdit=function(id){const c=list().find(x=>String(x.id)===String(id));if(!c)return;const logs=Array.isArray(c.logs)?c.logs:[];const first=logs[0]||{};const firstStamp=String(first.date||c.date||'');const firstDate=firstStamp.includes('T')?firstStamp.slice(0,10):firstStamp.slice(0,10);const firstTime=firstStamp.includes('T')?firstStamp.slice(11,16):'';window.ephCHModalFinal('Edit Contact Profile',[
+ ['type','Contact Category','select:'+cats],['name','Full Name *','text'],['phone','Phone Number *','tel'],['email','Email Address','email'],['source','Lead Source','select:Select source|WhatsApp|Phone Call|Referral|Walk-in|Facebook|Instagram|Property Portal|Google Form|Other'],['property','Interested Property','text'],['propertyType','Property Type','select:Select type|Condo / Apartment|Landed|Commercial|Factory|Land|Other'],['budget','Budget','text'],['dealingWith','Dealing With','select:Select role|Agent|Owner|Other'],['dealingWithName','Dealing With Name','text'],['__firstContact','First Contact','section'],['firstContactDate','First Contact Date','date'],['firstContactTime','First Contact Time','time'],['follow','Next Follow-up','date']
+ ],async d=>{try{const {firstContactDate,firstContactTime,...profile}=d;Object.assign(c,profile);const dt=(firstContactDate||'')+(firstContactTime?'T'+firstContactTime:'');c.logs=Array.isArray(c.logs)?c.logs:[];if(dt){if(c.logs.length){c.logs[0].date=dt;}else{c.logs.unshift({date:dt,method:'',status:c.status||'Open',notes:''});}c.date=dt;}c.updated=stamp();saveRefresh();if(typeof window.ephCHSyncOne==='function')await window.ephCHSyncOne(c);}catch(e){alert('Unable to update profile: '+(e.message||e));}},Object.assign({},c,{dealingWith:c.dealingWith||first.dealingWith||'',dealingWithName:c.dealingWithName||c.dealingWithContact||'',firstContactDate:firstDate,firstContactTime:firstTime}));};
+window.ephCHDelete=async function(id){const c=list().find(x=>String(x.id)===String(id));if(!c)return;if(!confirm('Delete contact '+(c.id||'')+' — '+(c.name||'')+' and all its contact logs? This cannot be undone.'))return;try{if(c._dbid&&typeof window.ephRequest==='function'){await window.ephRequest('/rest/v1/crm_records?id=eq.'+encodeURIComponent(c._dbid)+'&kind=eq.contactHistory',{method:'DELETE',headers:{Prefer:'return=minimal'}});}const a=list();const i=a.findIndex(x=>String(x.id)===String(id));if(i>=0)a.splice(i,1);if(window.__chSelected===id)window.__chSelected=a[0]?.id;saveRefresh();if(typeof window.ephCHLoadCloud==='function')await window.ephCHLoadCloud();if(typeof window.ephCHRefresh==='function')window.ephCHRefresh();}catch(e){alert('Delete failed: '+(e.message||e));}};
+// Extend the Contact History-only presentation; leave every other CRM page untouched.
+const old=window.ephCHRenderPage;
+if(typeof old==='function')window.ephCHRenderPage=function(){let h=old();
+ h=h.replace('<th>Customer</th><th>Agent</th><th>First Contact</th>','<th>Customer</th><th>Category</th><th>Dealing With</th><th>First Contact</th>');
+ h=h.replace('</td><td>${esc(c.assignedAgent||c.agent||\'—\')}</td><td>${firstDate(c)}</td>','</td><td>${esc((c.type&&c.type!==\'Select agent\'&&c.type!==\'Select category\')?c.type:(c.category&&c.category!==\'Select agent\'?c.category:\'—\'))}</td><td>${esc(c.dealingWithName||c.dealingWith||c.logs?.[0]?.dealingWith||\'—\')}</td><td>${firstDate(c)}</td>');
+ h=h.replace('<td colspan="6"><div class="empty">No contacts found','<td colspan="5"><div class="empty">No contacts found');
+ h=h.replace('<button class="btn" onclick="ephCHEdit(\'${esc(cur.id)}\')">Edit Profile</button>','<button class="btn" onclick="ephCHEdit(\'${esc(cur.id)}\')">Edit Profile</button><button class="btn danger" onclick="ephCHDelete(\'${esc(cur.id)}\')">Delete</button>');
+ h=h.replace('<div><small>Phone Number</small><b>${esc(cur.phone||\'—\')}</b></div>','<div><small>Contact Category</small><b>${esc(cur.type||\'Other\')}</b></div><div><small>Dealing With</small><b>${esc(cur.dealingWith||cur.logs?.[0]?.dealingWith||\'—\')}</b></div><div><small>Phone Number</small><b>${esc(cur.phone||\'—\')}</b></div>');
+ return h;};
+})();
+</script>
+
+<script id="eph-contact-history-hide-select-agent-placeholder">
+(function(){
+ const old=window.ephCHRenderPage;
+ if(typeof old==='function'&&!old.__hideSelectAgentPlaceholder){
+  const wrapped=function(){let h=old.apply(this,arguments);
+   // Remove the legacy placeholder from Contact History table rows and selected-contact header.
+   h=h.replace(/<td>\s*(?:Select agent|Select Agent)\s*<\/td>/g,'<td>—</td>');
+   h=h.replace(/(<small>|<b>|<span[^>]*>)\s*(?:Select agent|Select Agent)\s*(<\/small>|<\/b>|<\/span>)/g,'$1—$2');
+   h=h.replace(/\s*[·•]\s*(?:Select agent|Select Agent)(?=\s*<)/g,'');
+   return h;};
+  wrapped.__hideSelectAgentPlaceholder=true;window.ephCHRenderPage=wrapped;
+ }
 })();
 </script>
