@@ -5692,7 +5692,7 @@ window.ephCHEditLog=function(id,index){const c=chList().find(x=>String(x.id)===S
 window.ephCHDeleteLog=async function(id,index){const c=chList().find(x=>String(x.id)===String(id));if(!c||!Array.isArray(c.logs)||!c.logs[index])return;if(!confirm('Delete Contact Log #'+(index+1)+'? This cannot be undone.'))return;try{c.logs.splice(index,1);await chSave(c);alert('Contact log deleted.')}catch(e){alert('Delete failed: '+(e.message||e))}};
 })();
 </script>
-</body></html>
+
 <!-- EPH persistence repair: expanded listing row hydration and awaited owner CRM sync on Property Listing save. -->
 
 <style id="eph-customer-photo-fast-story-style-20261101">
@@ -6414,3 +6414,6 @@ if(typeof old==='function')window.ephCHRenderPage=function(){let h=old();
  }
 })();
 </script>
+
+</body>
+</html>
