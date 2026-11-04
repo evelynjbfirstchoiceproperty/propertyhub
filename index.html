@@ -6309,6 +6309,10 @@ window.render=function(){if(currentPage==='contactHistory'){let c=document.getEl
    await cloudLoad();
    return true;
  }
+ // Bridge the Contact History form's existing sync calls to the CRM cloud store.
+ // The form calls ephCHSyncOne(c); without this bridge those calls were silently skipped.
+ window.ephCHSyncOne=async function(c){return cloudSave(c);};
+ window.ephCHLoadCloud=cloudLoad;
  // Contact directory: one record per row, five rows per page.
  const originalRender=window.ephCHRenderPage;
  if(typeof originalRender==='function')window.ephCHRenderPage=function(){
@@ -6357,6 +6361,8 @@ window.render=function(){if(currentPage==='contactHistory'){let c=document.getEl
  const oldPage=window.ephCHRenderPage;window.ephCHRenderPage=function(){const h=oldPage?oldPage():'';return h.replace('＋ Add Contact</button>','＋ Add Contact</button>');};
  // Existing final navigation handler calls openCH directly, so hook its click too.
  document.addEventListener('click',e=>{const b=e.target&&e.target.closest&&e.target.closest('#sideNav [data-page="contactHistory"]');if(b)setTimeout(cloudLoad,0)},true);
+ // Also load after authentication completes; this covers re-login without a navigation click.
+ window.addEventListener('load',()=>{if(window.EPH_ADMIN_SESSION&&window.EPH_ADMIN_SESSION.access_token)setTimeout(cloudLoad,250);},{once:true});
 })();
 </script>
 
