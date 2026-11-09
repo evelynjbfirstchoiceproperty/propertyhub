@@ -6458,5 +6458,120 @@ if(typeof old==='function')window.ephCHRenderPage=function(){let h=old();
 })();
 </script>
 
+
+<script id="eph-owner-database-group-same-owner-v1">
+(function () {
+  'use strict';
+  if (window.__ephOwnerGroupedViewV1) return;
+  window.__ephOwnerGroupedViewV1 = true;
+
+  function clean(value) {
+    return String(value == null ? '' : value).trim();
+  }
+  function phoneKey(value) {
+    var digits = clean(value).replace(/\D/g, '');
+    if (/^60(?=1\d)/.test(digits)) digits = '0' + digits.slice(2);
+    return digits;
+  }
+  function emailKey(value) {
+    return clean(value).toLowerCase();
+  }
+  function nameKey(value) {
+    return clean(value).toLowerCase().replace(/\s+/g, ' ');
+  }
+  function refsOf(owner) {
+    var values = [];
+    try {
+      if (typeof ephOwnerListingRefs === 'function') values = ephOwnerListingRefs(owner) || [];
+    } catch (e) {}
+    if (!values.length) {
+      values = owner && (owner.listingRefs || owner.listing_refs || owner.listingRef || owner.listing_reference);
+    }
+    if (!Array.isArray(values)) values = clean(values).split(/[,;\n]+/);
+    var seen = Object.create(null);
+    return values.map(clean).filter(function (value) {
+      var key = value.toUpperCase();
+      if (!key || seen[key]) return false;
+      seen[key] = true;
+      return true;
+    }).sort(function (a, b) {
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }
+  function ownerKey(owner, index) {
+    var phone = phoneKey(owner.phone || owner.mobile || owner.whatsapp || owner.owner_phone);
+    var email = emailKey(owner.email || owner.owner_email);
+    var name = nameKey(owner.name || owner.ownerName || owner.owner_name);
+    if (phone) return 'phone:' + phone;
+    if (email) return 'email:' + email;
+    if (name) return 'name:' + name;
+    return 'record:' + clean(owner._dbid || owner.id || index);
+  }
+  function mergeOwners(rows) {
+    var groups = Object.create(null);
+    var result = [];
+    (Array.isArray(rows) ? rows : []).forEach(function (raw, index) {
+      if (!raw || typeof raw !== 'object') return;
+      var owner = Object.assign({}, raw);
+      var key = ownerKey(owner, index);
+      var current = groups[key];
+      var incomingRefs = refsOf(owner);
+      if (!current) {
+        owner.listingRefs = incomingRefs;
+        owner.listingRef = incomingRefs[0] || clean(owner.listingRef);
+        owner._sourceDbIds = [clean(owner._dbid)].filter(Boolean);
+        groups[key] = owner;
+        result.push(owner);
+        return;
+      }
+
+      // Keep the earliest existing Owner record as the display/edit anchor.
+      ['id', 'displayCode', '_dbid', 'created_at'].forEach(function (field) {
+        if (!clean(current[field]) && clean(owner[field])) current[field] = owner[field];
+      });
+      ['name', 'phone', 'email', 'alternatePhone', 'remark'].forEach(function (field) {
+        if (!clean(current[field]) && clean(owner[field])) current[field] = owner[field];
+      });
+      var allRefs = refsOf({ listingRefs: (current.listingRefs || []).concat(incomingRefs) });
+      current.listingRefs = allRefs;
+      current.listingRef = allRefs[0] || '';
+      if (clean(owner.updated_at) > clean(current.updated_at)) current.updated_at = owner.updated_at;
+      if (clean(owner._dbid) && current._sourceDbIds.indexOf(clean(owner._dbid)) < 0) {
+        current._sourceDbIds.push(clean(owner._dbid));
+      }
+    });
+    result.sort(function (a, b) {
+      var ar = (a.listingRefs || [])[0] || '';
+      var br = (b.listingRefs || [])[0] || '';
+      return ar.localeCompare(br, undefined, { numeric: true, sensitivity: 'base' }) ||
+        nameKey(a.name).localeCompare(nameKey(b.name));
+    });
+    return result;
+  }
+
+  var previousLoad = window.loadCRMData || (typeof loadCRMData === 'function' ? loadCRMData : null);
+  if (previousLoad) {
+    var groupedLoad = async function () {
+      var result = await previousLoad.apply(this, arguments);
+      window.ephOwners = mergeOwners(window.ephOwners || []);
+      try {
+        if (typeof ownerRecords !== 'undefined') ownerRecords = window.ephOwners.slice();
+      } catch (e) {}
+      var count = document.getElementById('ownerCount');
+      if (count) count.textContent = String(window.ephOwners.length);
+      if (typeof window.render === 'function') window.render();
+      return result;
+    };
+    window.loadCRMData = groupedLoad;
+    try { loadCRMData = groupedLoad; } catch (e) {}
+  }
+
+  // Group the already-loaded rows immediately if this script is evaluated after login.
+  if (Array.isArray(window.ephOwners)) {
+    window.ephOwners = mergeOwners(window.ephOwners);
+  }
+})();
+</script>
+
 </body>
 </html>
